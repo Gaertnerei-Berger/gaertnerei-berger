@@ -1,4 +1,4 @@
-## Gaertnerei Berger DATEV Integration
+## Gaertnerei Berger
 
 Integration between [ERPNext](https://github.com/frappe/erpnext) and DATEV.
 

@@ -1,0 +1,75 @@
+{
+ "actions": [],
+ "autoname": "field:voucher_type",
+ "creation": "2026-04-28 16:20:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "voucher_type",
+  "mapping_fields"
+ ],
+ "fields": [
+  {
+   "fieldname": "voucher_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Voucher Type",
+   "options": "\nSales Invoice\nPurchase Invoice\nPayment Entry\nExpense Claim\nPayroll Entry\nBank Reconciliation\nAsset\nStock Entry\nJournal Entry",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "mapping_fields",
+   "fieldtype": "Table",
+   "label": "DATEV Mapping Field",
+   "options": "DATEV Mapping Field"
+  }
+ ],
+ "links": [],
+ "modified": "2026-04-28 16:20:00.000000",
+ "modified_by": "Administrator",
+ "module": "GB DATEV",
+ "name": "DATEV Mapping",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

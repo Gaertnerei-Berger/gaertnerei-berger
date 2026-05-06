@@ -1,0 +1,5 @@
+[pre_model_sync]
+
+[post_model_sync]
+gaertnerei_berger.patches.post_model_sync.seed_datev_mapping_records
+execute:frappe.db.delete("Custom Role", {"report": "DATEV"})

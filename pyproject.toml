@@ -1,9 +1,9 @@
 [project]
-name = "gaertnerei_berger_datev"
+name = "gaertnerei_berger"
 authors = [
     { name = "Gaertnerei Berger", email = "info@gaertnerei-berger.de"}
 ]
-description = "Gaertnerei Berger DATEV Integration"
+description = "Gaertnerei Berger"
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
