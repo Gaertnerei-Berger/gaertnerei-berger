@@ -16,13 +16,20 @@ fixtures = [
 				"name",
 				"in",
 				[
+					"Item Tax Template-custom_datev_section",
+					"Item Tax Template-custom_bu_schlussel",
+					"Journal Entry Account-custom_datev_section",
+					"Journal Entry Account-custom_datev_account_no",
+					"Journal Entry Account-custom_datev_code",
 					"Party Account-debtor_creditor_number",
-					"Sales Invoice Item-datev_settings_section",
-					"Sales Invoice Item-datev_account_no",
-					"Sales Invoice Item-datev_settings_end_section",
 					"Purchase Invoice Item-datev_settings_section",
-					"Purchase Invoice Item-datev_account_no",
+					"Purchase Invoice Item-custom_datev_account_no",
+					"Purchase Invoice Item-custom_bu_schlussel",
 					"Purchase Invoice Item-datev_settings_end_section",
+					"Sales Invoice Item-datev_settings_section",
+					"Sales Invoice Item-custom_datev_account_no",
+					"Sales Invoice Item-custom_bu_schlussel",
+					"Sales Invoice Item-datev_settings_end_section",
 				],
 			]
 		],
@@ -87,6 +94,7 @@ fixtures = [
 
 # before_install = "gaertnerei_berger.install.before_install"
 after_install = "gaertnerei_berger.install.after_install"
+after_migrate = ["gaertnerei_berger.datev_custom_fields.after_migrate"]
 
 # Desk Notifications
 # ------------------
