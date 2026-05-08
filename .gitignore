@@ -5,3 +5,9 @@
 tags
 gaertnerei_berger_datev/docs/current
 build/
+
+.paperclip-runtime/
+
+.paperclip/
+
+gaertnerei_berger/gb_datev/dummy_data.py
