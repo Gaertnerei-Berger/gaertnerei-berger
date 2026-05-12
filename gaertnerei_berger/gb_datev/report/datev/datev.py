@@ -9,6 +9,7 @@ Provide a report and downloadable CSV according to the German DATEV format.
 
 import json
 from datetime import date, datetime
+from decimal import Decimal, ROUND_HALF_UP
 
 import frappe
 from erpnext.accounts.utils import get_fiscal_year
@@ -231,6 +232,152 @@ def get_transactions(filters, as_dict=1):
 		transactions.extend(run(params_method=get_generic_params, filters=filters))
 
 	return sorted(transactions, key=sort_by)
+
+
+def group_sales_invoice_buchungsstapel(transactions, filters):
+	"""
+	Replace raw Sales Invoice GL rows with grouped invoice-item rows.
+
+	The customer expects one Buchungsstapel row per Sales Invoice item account
+	group, not one row per GL Entry row. Items sharing the same DATEV account and
+	BU key are combined into one export line.
+	"""
+	if not transactions:
+		return transactions
+
+	grouped_transactions = []
+	sales_rows_by_voucher = {}
+
+	for row in transactions:
+		if row.get("Beleginfo - Art 1") == "Sales Invoice" and row.get("Belegfeld 1"):
+			sales_rows_by_voucher.setdefault(row.get("Belegfeld 1"), []).append(row)
+			continue
+
+		grouped_transactions.append(row)
+
+	for voucher_no, voucher_rows in sales_rows_by_voucher.items():
+		grouped_transactions.extend(get_grouped_sales_invoice_rows(voucher_no, voucher_rows, filters))
+
+	return sorted(grouped_transactions, key=lambda row: row.get("Belegdatum"))
+
+
+def get_grouped_sales_invoice_rows(voucher_no, voucher_rows, filters):
+	sales_invoice = load_voucher_doc("Sales Invoice", voucher_no)
+	if not sales_invoice:
+		return voucher_rows
+
+	base_row = get_sales_invoice_base_row(voucher_rows)
+	gegenkonto = get_sales_invoice_gegenkonto(sales_invoice, base_row, filters)
+	grouped_rows = {}
+
+	for item in sales_invoice.get("items") or []:
+		konto = get_sales_invoice_item_konto(item, filters.get("company"))
+		if not konto:
+			continue
+
+		amount = get_sales_invoice_item_amount(item)
+		if amount == 0:
+			continue
+
+		bu_schluessel = item.get("custom_bu_schlussel") or ""
+		group_key = (konto, gegenkonto, bu_schluessel)
+
+		if group_key not in grouped_rows:
+			grouped_rows[group_key] = make_grouped_sales_invoice_row(
+				base_row=base_row,
+				konto=konto,
+				gegenkonto=gegenkonto,
+				bu_schluessel=bu_schluessel,
+				amount=amount,
+			)
+			continue
+
+		existing_amount = Decimal(str(grouped_rows[group_key]["Umsatz (ohne Soll/Haben-Kz)"]))
+		total_amount = existing_amount + amount
+		grouped_rows[group_key]["Umsatz (ohne Soll/Haben-Kz)"] = abs(total_amount)
+		grouped_rows[group_key]["Soll/Haben-Kennzeichen"] = get_sales_invoice_amount_indicator(
+			total_amount
+		)
+
+	if grouped_rows:
+		return list(grouped_rows.values())
+
+	return voucher_rows
+
+
+def get_sales_invoice_base_row(voucher_rows):
+	for row in voucher_rows:
+		if row.get("Beleginfo - Art 3") == "Customer":
+			return dict(row)
+
+	return dict(voucher_rows[0])
+
+
+def get_sales_invoice_gegenkonto(sales_invoice, base_row, filters):
+	debtor_number = frappe.db.get_value(
+		"Party Account",
+		{
+			"parent": sales_invoice.customer,
+			"parenttype": "Customer",
+			"company": sales_invoice.company,
+		},
+		"debtor_creditor_number",
+	)
+	if debtor_number:
+		return debtor_number
+
+	debit_to_account_number = frappe.db.get_value("Account", sales_invoice.debit_to, "account_number")
+	if debit_to_account_number:
+		return debit_to_account_number
+
+	return base_row.get("Gegenkonto (ohne BU-Schlüssel)") or filters.get("against_account") or ""
+
+
+def get_sales_invoice_item_konto(item, company):
+	if item.get("custom_datev_account_no"):
+		return item.get("custom_datev_account_no")
+
+	if item.get("income_account"):
+		account_number = frappe.db.get_value("Account", item.get("income_account"), "account_number")
+		if account_number:
+			return account_number
+
+	if item.get("item_code") and company:
+		default_income_account = frappe.db.get_value(
+			"Item Default",
+			{"parent": item.get("item_code"), "company": company},
+			"income_account",
+		)
+		if default_income_account:
+			return frappe.db.get_value("Account", default_income_account, "account_number")
+
+	return ""
+
+
+def get_sales_invoice_item_amount(item):
+	amount = item.get("base_net_amount")
+	if amount in (None, ""):
+		amount = item.get("base_amount")
+	if amount in (None, ""):
+		amount = item.get("net_amount")
+	if amount in (None, ""):
+		amount = item.get("amount") or 0
+
+	return Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def make_grouped_sales_invoice_row(base_row, konto, gegenkonto, bu_schluessel, amount):
+	row = dict(base_row)
+	row["Umsatz (ohne Soll/Haben-Kz)"] = abs(amount)
+	row["Soll/Haben-Kennzeichen"] = get_sales_invoice_amount_indicator(amount)
+	row["Konto"] = konto
+	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
+	row["BU-Schlüssel"] = bu_schluessel
+	return row
+
+
+def get_sales_invoice_amount_indicator(amount):
+	return "H" if amount >= 0 else "S"
 
 
 def get_payment_entry_params(filters):
@@ -802,6 +949,7 @@ def download_datev_csv(filters):
 	)
 
 	transactions = get_transactions(filters)
+	transactions = group_sales_invoice_buchungsstapel(transactions, filters)
 	transactions = apply_buchungsstapel_mapping(transactions, filters)
 	account_names = get_account_names(filters)
 	customers = get_customers(filters)
