@@ -93,7 +93,6 @@ fixtures = [
 # ------------
 
 # before_install = "gaertnerei_berger.install.before_install"
-after_install = "gaertnerei_berger.install.after_install"
 # Desk Notifications
 # ------------------
 # See frappe.core.notifications.get_notification_config
