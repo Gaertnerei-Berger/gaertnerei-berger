@@ -94,8 +94,6 @@ fixtures = [
 
 # before_install = "gaertnerei_berger.install.before_install"
 after_install = "gaertnerei_berger.install.after_install"
-after_migrate = ["gaertnerei_berger.datev_custom_fields.after_migrate"]
-
 # Desk Notifications
 # ------------------
 # See frappe.core.notifications.get_notification_config
