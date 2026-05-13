@@ -1,6 +1,7 @@
 import zipfile
 from io import BytesIO
 from unittest import TestCase
+from unittest.mock import patch
 
 import frappe
 from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import (
@@ -12,6 +13,7 @@ from gaertnerei_berger.gb_datev.report.datev.datev import (
 	download_datev_csv,
 	get_account_names,
 	get_customers,
+	group_sales_invoice_buchungsstapel,
 	get_suppliers,
 	get_transactions,
 )
@@ -254,3 +256,119 @@ class TestDatev(TestCase):
 		zip_buffer.write(frappe.response["filecontent"])
 
 		self.assertTrue(zipfile.is_zipfile(zip_buffer))
+
+
+class TestDatevSalesInvoiceGrouping(TestCase):
+	def test_groups_sales_invoice_rows_by_item_datev_account(self):
+		transactions = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 42,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "1200",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "RG-260007",
+				"Buchungstext": "Accounting Entry for Sales Invoice",
+				"Beleginfo - Art 1": "Sales Invoice",
+				"Beleginfo - Inhalt 1": "RG-260007",
+				"Beleginfo - Art 3": "Customer",
+				"Beleginfo - Inhalt 3": "Test Customer",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 10,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "8400",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "RG-260007",
+				"Buchungstext": "Accounting Entry for Sales Invoice",
+				"Beleginfo - Art 1": "Sales Invoice",
+				"Beleginfo - Inhalt 1": "RG-260007",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 7.5,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "3806",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "RG-260007",
+				"Buchungstext": "Accounting Entry for Sales Invoice",
+				"Beleginfo - Art 1": "Sales Invoice",
+				"Beleginfo - Inhalt 1": "RG-260007",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 5,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "1776",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-PAY-0001",
+				"Buchungstext": "Payment Entry",
+				"Beleginfo - Art 1": "Payment Entry",
+				"Beleginfo - Inhalt 1": "ACC-PAY-0001",
+			},
+		]
+		sales_invoice = frappe._dict(
+			{
+				"name": "RG-260007",
+				"company": "_Test GmbH",
+				"customer": "Test Customer",
+				"debit_to": "Debtors - _TG",
+				"items": [
+					frappe._dict(
+						{
+							"custom_datev_account_no": "8400",
+							"custom_bu_schlussel": "",
+							"base_net_amount": 10,
+						}
+					),
+					frappe._dict(
+						{
+							"custom_datev_account_no": "8400",
+							"custom_bu_schlussel": "",
+							"base_net_amount": 15,
+						}
+					),
+					frappe._dict(
+						{
+							"custom_datev_account_no": "8300",
+							"custom_bu_schlussel": "",
+							"base_net_amount": 7,
+						}
+					),
+				],
+			}
+		)
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=sales_invoice,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.frappe.db.get_value",
+				side_effect=["10001"],
+			),
+		):
+			grouped = group_sales_invoice_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9999"}
+			)
+
+		sales_rows = [row for row in grouped if row["Beleginfo - Art 1"] == "Sales Invoice"]
+		self.assertEqual(len(sales_rows), 2)
+		self.assertEqual(
+			{(row["Konto"], float(row["Umsatz (ohne Soll/Haben-Kz)"])) for row in sales_rows},
+			{("8400", 25.0), ("8300", 7.0)},
+		)
+		self.assertEqual(
+			{row["Gegenkonto (ohne BU-Schlüssel)"] for row in sales_rows},
+			{"10001"},
+		)
+
+		other_rows = [row for row in grouped if row["Beleginfo - Art 1"] != "Sales Invoice"]
+		self.assertEqual(len(other_rows), 1)
+		self.assertEqual(other_rows[0]["Belegfeld 1"], "ACC-PAY-0001")
