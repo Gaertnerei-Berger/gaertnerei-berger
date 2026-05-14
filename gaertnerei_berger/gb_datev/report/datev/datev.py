@@ -280,7 +280,8 @@ def get_grouped_sales_invoice_rows(voucher_no, voucher_rows, filters):
 			continue
 
 		bu_schluessel = item.get("custom_bu_schlussel") or ""
-		group_key = (konto, gegenkonto, bu_schluessel)
+		tax_grouping_key = get_sales_invoice_item_tax_grouping_key(item)
+		group_key = (konto, tax_grouping_key)
 
 		if group_key not in grouped_rows:
 			grouped_rows[group_key] = make_grouped_sales_invoice_row(
@@ -364,6 +365,25 @@ def get_sales_invoice_item_amount(item):
 		amount = item.get("amount") or 0
 
 	return Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def get_sales_invoice_item_tax_grouping_key(item):
+	parts = []
+	for fieldname in ("item_tax_template", "item_tax_rate", "custom_bu_schlussel"):
+		value = item.get(fieldname)
+		if value in (None, "", {}, []):
+			continue
+
+		parts.append("{}:{}".format(fieldname, normalize_sales_invoice_grouping_value(value)))
+
+	return "|".join(parts)
+
+
+def normalize_sales_invoice_grouping_value(value):
+	if isinstance(value, (dict, list)):
+		return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+	return str(value)
 
 
 def make_grouped_sales_invoice_row(base_row, konto, gegenkonto, bu_schluessel, amount):
@@ -585,6 +605,9 @@ def apply_buchungsstapel_mapping(transactions, filters):
 			if not mapping.get("map_to_column") or not mapping.get("map_to_field"):
 				continue
 
+			if should_preserve_existing_bu_schluessel(row, mapping):
+				continue
+
 			value = resolve_map_to_value(
 				voucher_doc=voucher_doc,
 				map_to_field=mapping.get("map_to_field"),
@@ -599,6 +622,16 @@ def apply_buchungsstapel_mapping(transactions, filters):
 			row[mapping.get("map_to_column")] = normalize_mapped_value(value)
 
 	return transactions
+
+
+def should_preserve_existing_bu_schluessel(row, mapping):
+	if mapping.get("map_to_column") != "BU-Schlüssel":
+		return False
+
+	if row.get("Beleginfo - Art 1") != "Sales Invoice":
+		return False
+
+	return bool(row.get("BU-Schlüssel"))
 
 
 def get_buchungsstapel_mappings(voucher_types):
