@@ -280,7 +280,8 @@ def get_grouped_sales_invoice_rows(voucher_no, voucher_rows, filters):
 			continue
 
 		bu_schluessel = item.get("custom_bu_schlussel") or ""
-		group_key = (konto, gegenkonto, bu_schluessel)
+		tax_grouping_key = get_sales_invoice_item_tax_grouping_key(item)
+		group_key = (konto, tax_grouping_key)
 
 		if group_key not in grouped_rows:
 			grouped_rows[group_key] = make_grouped_sales_invoice_row(
@@ -364,6 +365,25 @@ def get_sales_invoice_item_amount(item):
 		amount = item.get("amount") or 0
 
 	return Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def get_sales_invoice_item_tax_grouping_key(item):
+	parts = []
+	for fieldname in ("item_tax_template", "item_tax_rate", "custom_bu_schlussel"):
+		value = item.get(fieldname)
+		if value in (None, "", {}, []):
+			continue
+
+		parts.append("{}:{}".format(fieldname, normalize_sales_invoice_grouping_value(value)))
+
+	return "|".join(parts)
+
+
+def normalize_sales_invoice_grouping_value(value):
+	if isinstance(value, (dict, list)):
+		return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+	return str(value)
 
 
 def make_grouped_sales_invoice_row(base_row, konto, gegenkonto, bu_schluessel, amount):

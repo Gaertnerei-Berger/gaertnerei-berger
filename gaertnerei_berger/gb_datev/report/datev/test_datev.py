@@ -259,7 +259,7 @@ class TestDatev(TestCase):
 
 
 class TestDatevSalesInvoiceGrouping(TestCase):
-	def test_groups_sales_invoice_rows_by_item_datev_account(self):
+	def test_groups_sales_invoice_rows_only_when_account_and_tax_match(self):
 		transactions = [
 			{
 				"Umsatz (ohne Soll/Haben-Kz)": 42,
@@ -323,6 +323,7 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 						{
 							"custom_datev_account_no": "8400",
 							"custom_bu_schlussel": "",
+							"item_tax_template": "DE Standard 19",
 							"base_net_amount": 10,
 						}
 					),
@@ -330,14 +331,32 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 						{
 							"custom_datev_account_no": "8400",
 							"custom_bu_schlussel": "",
+							"item_tax_template": "DE Standard 19",
 							"base_net_amount": 15,
+						}
+					),
+					frappe._dict(
+						{
+							"custom_datev_account_no": "8400",
+							"custom_bu_schlussel": "",
+							"item_tax_template": "DE Reduced 7",
+							"base_net_amount": 7,
 						}
 					),
 					frappe._dict(
 						{
 							"custom_datev_account_no": "8300",
 							"custom_bu_schlussel": "",
-							"base_net_amount": 7,
+							"item_tax_template": "DE Standard 19",
+							"base_net_amount": 9,
+						}
+					),
+					frappe._dict(
+						{
+							"custom_datev_account_no": "4400",
+							"custom_bu_schlussel": "",
+							"item_tax_template": "EU Reverse Charge",
+							"base_net_amount": 11,
 						}
 					),
 				],
@@ -359,10 +378,10 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 			)
 
 		sales_rows = [row for row in grouped if row["Beleginfo - Art 1"] == "Sales Invoice"]
-		self.assertEqual(len(sales_rows), 2)
+		self.assertEqual(len(sales_rows), 4)
 		self.assertEqual(
 			{(row["Konto"], float(row["Umsatz (ohne Soll/Haben-Kz)"])) for row in sales_rows},
-			{("8400", 25.0), ("8300", 7.0)},
+			{("8400", 25.0), ("8400", 7.0), ("8300", 9.0), ("4400", 11.0)},
 		)
 		self.assertEqual(
 			{row["Gegenkonto (ohne BU-Schlüssel)"] for row in sales_rows},
