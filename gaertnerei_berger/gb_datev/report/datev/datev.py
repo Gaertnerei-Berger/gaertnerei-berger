@@ -605,6 +605,9 @@ def apply_buchungsstapel_mapping(transactions, filters):
 			if not mapping.get("map_to_column") or not mapping.get("map_to_field"):
 				continue
 
+			if should_preserve_existing_bu_schluessel(row, mapping):
+				continue
+
 			value = resolve_map_to_value(
 				voucher_doc=voucher_doc,
 				map_to_field=mapping.get("map_to_field"),
@@ -619,6 +622,16 @@ def apply_buchungsstapel_mapping(transactions, filters):
 			row[mapping.get("map_to_column")] = normalize_mapped_value(value)
 
 	return transactions
+
+
+def should_preserve_existing_bu_schluessel(row, mapping):
+	if mapping.get("map_to_column") != "BU-Schlüssel":
+		return False
+
+	if row.get("Beleginfo - Art 1") != "Sales Invoice":
+		return False
+
+	return bool(row.get("BU-Schlüssel"))
 
 
 def get_buchungsstapel_mappings(voucher_types):
