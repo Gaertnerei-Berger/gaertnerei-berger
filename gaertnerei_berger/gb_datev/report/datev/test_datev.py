@@ -10,6 +10,7 @@ from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import (
 from frappe.utils import cstr, now_datetime, today
 
 from gaertnerei_berger.gb_datev.report.datev.datev import (
+	apply_buchungsstapel_mapping,
 	download_datev_csv,
 	get_account_names,
 	get_customers,
@@ -391,3 +392,71 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		other_rows = [row for row in grouped if row["Beleginfo - Art 1"] != "Sales Invoice"]
 		self.assertEqual(len(other_rows), 1)
 		self.assertEqual(other_rows[0]["Belegfeld 1"], "ACC-PAY-0001")
+
+	def test_preserves_grouped_sales_invoice_bu_schluessel_from_mapping_override(self):
+		transactions = [
+			{
+				"Konto": "8400",
+				"Gegenkonto (ohne BU-Schlüssel)": "10001",
+				"BU-Schlüssel": "19",
+				"Belegfeld 1": "ACC-SINV-2026-00011",
+				"Beleginfo - Art 1": "Sales Invoice",
+			},
+			{
+				"Konto": "8400",
+				"Gegenkonto (ohne BU-Schlüssel)": "10001",
+				"BU-Schlüssel": "7",
+				"Belegfeld 1": "ACC-SINV-2026-00011",
+				"Beleginfo - Art 1": "Sales Invoice",
+			},
+			{
+				"Konto": "1776",
+				"Gegenkonto (ohne BU-Schlüssel)": "10001",
+				"BU-Schlüssel": "",
+				"Belegfeld 1": "ACC-PAY-0001",
+				"Beleginfo - Art 1": "Payment Entry",
+			},
+		]
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value={
+					"Sales Invoice": [
+						frappe._dict(
+							{
+								"map_to_field": "custom_bu_schlussel",
+								"map_to_column": "BU-Schlüssel",
+							}
+						)
+					],
+					"Payment Entry": [
+						frappe._dict(
+							{
+								"map_to_field": "reference_no",
+								"map_to_column": "BU-Schlüssel",
+							}
+						)
+					],
+				},
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=frappe._dict({"name": "stub-voucher"}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.resolve_map_to_value",
+				side_effect=["mapped-bu", "mapped-bu", "mapped-payment"],
+			),
+		):
+			mapped = apply_buchungsstapel_mapping(transactions, {"company": "_Test GmbH"})
+
+		sales_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Sales Invoice"]
+		self.assertEqual([row["BU-Schlüssel"] for row in sales_rows], ["19", "7"])
+
+		payment_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Payment Entry"]
+		self.assertEqual([row["BU-Schlüssel"] for row in payment_rows], ["mapped-payment"])
