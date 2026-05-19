@@ -582,6 +582,7 @@ def apply_buchungsstapel_mapping(transactions, filters):
 	account_number_to_name, account_name_to_number = get_account_maps(filters.get("company"))
 	voucher_cache = {}
 	child_meta_cache = {}
+	sales_invoice_konto_values = get_sales_invoice_konto_values(transactions)
 
 	for row in transactions:
 		voucher_type = row.get("Beleginfo - Art 1")
@@ -605,7 +606,11 @@ def apply_buchungsstapel_mapping(transactions, filters):
 			if not mapping.get("map_to_column") or not mapping.get("map_to_field"):
 				continue
 
-			if should_preserve_existing_bu_schluessel(row, mapping):
+			if should_preserve_existing_mapped_value(
+				row=row,
+				mapping=mapping,
+				sales_invoice_konto_values=sales_invoice_konto_values,
+			):
 				continue
 
 			value = resolve_map_to_value(
@@ -624,6 +629,30 @@ def apply_buchungsstapel_mapping(transactions, filters):
 	return transactions
 
 
+def get_sales_invoice_konto_values(transactions):
+	konto_values = {}
+
+	for row in transactions:
+		if row.get("Beleginfo - Art 1") != "Sales Invoice":
+			continue
+
+		voucher_no = row.get("Belegfeld 1")
+		konto = row.get("Konto")
+		if not voucher_no or not konto:
+			continue
+
+		konto_values.setdefault(voucher_no, set()).add(konto)
+
+	return konto_values
+
+
+def should_preserve_existing_mapped_value(row, mapping, sales_invoice_konto_values):
+	if should_preserve_existing_bu_schluessel(row, mapping):
+		return True
+
+	return should_preserve_grouped_sales_invoice_konto(row, mapping, sales_invoice_konto_values)
+
+
 def should_preserve_existing_bu_schluessel(row, mapping):
 	if mapping.get("map_to_column") != "BU-Schlüssel":
 		return False
@@ -632,6 +661,23 @@ def should_preserve_existing_bu_schluessel(row, mapping):
 		return False
 
 	return bool(row.get("BU-Schlüssel"))
+
+
+def should_preserve_grouped_sales_invoice_konto(row, mapping, sales_invoice_konto_values):
+	if mapping.get("map_to_column") != "Konto":
+		return False
+
+	if "." in (mapping.get("map_to_field") or ""):
+		return False
+
+	if row.get("Beleginfo - Art 1") != "Sales Invoice":
+		return False
+
+	voucher_no = row.get("Belegfeld 1")
+	if not voucher_no:
+		return False
+
+	return len(sales_invoice_konto_values.get(voucher_no) or ()) > 1
 
 
 def get_buchungsstapel_mappings(voucher_types):
