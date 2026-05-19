@@ -165,7 +165,10 @@ def execute(filters=None):
 			["temporary_against_account_number", "opening_against_account_number"],
 		)
 		filters.update({"against_account": temp, "opening_account": opening or temp})
-		data = get_transactions(filters, as_dict=0)
+		data = get_transactions(filters)
+		data = group_sales_invoice_buchungsstapel(data, filters)
+		data = apply_buchungsstapel_mapping(data, filters)
+		data = [[row.get(column.get("fieldname")) for column in COLUMNS] for row in data]
 
 	return COLUMNS, data
 
