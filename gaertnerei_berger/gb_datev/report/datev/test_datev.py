@@ -12,6 +12,7 @@ from frappe.utils import cstr, now_datetime, today
 from gaertnerei_berger.gb_datev.report.datev.datev import (
 	apply_buchungsstapel_mapping,
 	download_datev_csv,
+	execute,
 	get_account_names,
 	get_customers,
 	group_sales_invoice_buchungsstapel,
@@ -260,6 +261,100 @@ class TestDatev(TestCase):
 
 
 class TestDatevSalesInvoiceGrouping(TestCase):
+	def test_execute_applies_grouping_and_mapping_before_returning_rows(self):
+		raw_transactions = [
+			{
+				"Konto": "4300",
+				"Gegenkonto (ohne BU-Schlüssel)": "10483",
+				"BU-Schlüssel": "7",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-SINV-2026-00010",
+				"Beleginfo - Art 1": "Sales Invoice",
+			}
+		]
+		grouped_transactions = [
+			{
+				"Konto": "4300",
+				"Gegenkonto (ohne BU-Schlüssel)": "10483",
+				"BU-Schlüssel": "7",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-SINV-2026-00010",
+				"Beleginfo - Art 1": "Sales Invoice",
+			},
+			{
+				"Konto": "6990",
+				"Gegenkonto (ohne BU-Schlüssel)": "10483",
+				"BU-Schlüssel": "7",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-SINV-2026-00010",
+				"Beleginfo - Art 1": "Sales Invoice",
+			},
+		]
+		mapped_transactions = [
+			{
+				"Konto": "4300",
+				"Gegenkonto (ohne BU-Schlüssel)": "4300",
+				"BU-Schlüssel": "7",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-SINV-2026-00010",
+				"Beleginfo - Art 1": "Sales Invoice",
+			},
+			{
+				"Konto": "6990",
+				"Gegenkonto (ohne BU-Schlüssel)": "6990",
+				"BU-Schlüssel": "7",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-SINV-2026-00010",
+				"Beleginfo - Art 1": "Sales Invoice",
+			},
+		]
+		filters = {
+			"company": "_Test GmbH",
+			"from_date": today(),
+			"to_date": today(),
+			"voucher_type": "Sales Invoice",
+		}
+
+		with (
+			patch("gaertnerei_berger.gb_datev.report.datev.datev.validate", return_value=True),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.frappe.get_value",
+				return_value=("9999", "9998"),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_transactions",
+				return_value=raw_transactions,
+			) as get_transactions_mock,
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.group_sales_invoice_buchungsstapel",
+				return_value=grouped_transactions,
+			) as group_mock,
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.apply_buchungsstapel_mapping",
+				return_value=mapped_transactions,
+			) as map_mock,
+		):
+			columns, data = execute(filters)
+
+		self.assertEqual(
+			[column["fieldname"] for column in columns[:5]],
+			[
+				"Umsatz (ohne Soll/Haben-Kz)",
+				"Soll/Haben-Kennzeichen",
+				"Konto",
+				"Gegenkonto (ohne BU-Schlüssel)",
+				"BU-Schlüssel",
+			],
+		)
+		self.assertEqual(
+			[data_row[2:5] for data_row in data],
+			[["4300", "4300", "7"], ["6990", "6990", "7"]],
+		)
+		self.assertEqual(get_transactions_mock.call_args.args[0]["against_account"], "9999")
+		self.assertEqual(get_transactions_mock.call_args.args[0]["opening_account"], "9998")
+		group_mock.assert_called_once_with(raw_transactions, get_transactions_mock.call_args.args[0])
+		map_mock.assert_called_once_with(grouped_transactions, get_transactions_mock.call_args.args[0])
+
 	def test_groups_sales_invoice_rows_only_when_account_and_tax_match(self):
 		transactions = [
 			{
