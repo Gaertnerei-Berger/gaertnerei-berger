@@ -612,6 +612,7 @@ def apply_buchungsstapel_mapping(transactions, filters):
 			if should_preserve_existing_mapped_value(
 				row=row,
 				mapping=mapping,
+				voucher_doc=voucher_doc,
 				sales_invoice_konto_values=sales_invoice_konto_values,
 			):
 				continue
@@ -649,11 +650,13 @@ def get_sales_invoice_konto_values(transactions):
 	return konto_values
 
 
-def should_preserve_existing_mapped_value(row, mapping, sales_invoice_konto_values):
+def should_preserve_existing_mapped_value(row, mapping, voucher_doc, sales_invoice_konto_values):
 	if should_preserve_existing_bu_schluessel(row, mapping):
 		return True
 
-	return should_preserve_grouped_sales_invoice_konto(row, mapping, sales_invoice_konto_values)
+	return should_preserve_grouped_sales_invoice_konto(
+		row, mapping, voucher_doc, sales_invoice_konto_values
+	)
 
 
 def should_preserve_existing_bu_schluessel(row, mapping):
@@ -666,11 +669,12 @@ def should_preserve_existing_bu_schluessel(row, mapping):
 	return bool(row.get("BU-Schlüssel"))
 
 
-def should_preserve_grouped_sales_invoice_konto(row, mapping, sales_invoice_konto_values):
+def should_preserve_grouped_sales_invoice_konto(row, mapping, voucher_doc, sales_invoice_konto_values):
 	if mapping.get("map_to_column") != "Konto":
 		return False
 
-	if "." in (mapping.get("map_to_field") or ""):
+	map_to_field = mapping.get("map_to_field") or ""
+	if "." in map_to_field:
 		return False
 
 	if row.get("Beleginfo - Art 1") != "Sales Invoice":
@@ -680,7 +684,43 @@ def should_preserve_grouped_sales_invoice_konto(row, mapping, sales_invoice_kont
 	if not voucher_no:
 		return False
 
+	if not is_account_like_parent_mapping_field(voucher_doc, map_to_field):
+		return False
+
 	return len(sales_invoice_konto_values.get(voucher_no) or ()) > 1
+
+
+def is_account_like_parent_mapping_field(voucher_doc, map_to_field):
+	if not map_to_field:
+		return False
+
+	field_candidates = [map_to_field.lower()]
+	docfield = None
+	meta = getattr(voucher_doc, "meta", None)
+	if meta and hasattr(meta, "get_field"):
+		docfield = meta.get_field(map_to_field)
+
+	if docfield:
+		if docfield.fieldtype == "Link" and docfield.options == "Account":
+			return True
+
+		field_candidates.extend(
+			filter(
+				None,
+				[
+					(docfield.fieldname or "").lower(),
+					(docfield.label or "").lower(),
+					(docfield.options or "").lower(),
+					(docfield.fetch_from or "").lower(),
+				],
+			)
+		)
+
+	return any(
+		token in candidate
+		for candidate in field_candidates
+		for token in ("account", "konto", "account_number")
+	)
 
 
 def get_buchungsstapel_mappings(voucher_types):
