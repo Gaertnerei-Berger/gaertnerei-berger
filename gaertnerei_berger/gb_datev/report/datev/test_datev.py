@@ -560,7 +560,7 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual([row["BU-Schlüssel"] for row in payment_rows], ["mapped-payment"])
 		self.assertEqual(resolve_map.call_count, 1)
 
-	def test_applies_grouped_sales_invoice_konto_from_parent_mapping_override(self):
+	def test_preserves_grouped_sales_invoice_konto_from_parent_mapping_override(self):
 		transactions = [
 			{
 				"Konto": "8400",
@@ -622,7 +622,7 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 			mapped = apply_buchungsstapel_mapping(transactions, {"company": "_Test GmbH"})
 
 		sales_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Sales Invoice"]
-		self.assertEqual([row["Konto"] for row in sales_rows], ["9999", "9999"])
+		self.assertEqual([row["Konto"] for row in sales_rows], ["8400", "8300"])
 
 		payment_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Payment Entry"]
 		self.assertEqual([row["Konto"] for row in payment_rows], ["mapped-payment"])
