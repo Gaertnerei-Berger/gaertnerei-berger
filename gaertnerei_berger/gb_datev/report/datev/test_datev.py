@@ -560,7 +560,7 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual([row["BU-Schlüssel"] for row in payment_rows], ["mapped-payment"])
 		self.assertEqual(resolve_map.call_count, 1)
 
-	def test_preserves_grouped_sales_invoice_konto_from_parent_mapping_override(self):
+	def test_applies_grouped_sales_invoice_konto_from_parent_mapping_override(self):
 		transactions = [
 			{
 				"Konto": "8400",
@@ -622,7 +622,74 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 			mapped = apply_buchungsstapel_mapping(transactions, {"company": "_Test GmbH"})
 
 		sales_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Sales Invoice"]
-		self.assertEqual([row["Konto"] for row in sales_rows], ["8400", "8300"])
+		self.assertEqual([row["Konto"] for row in sales_rows], ["9999", "9999"])
+
+		payment_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Payment Entry"]
+		self.assertEqual([row["Konto"] for row in payment_rows], ["mapped-payment"])
+
+	def test_applies_grouped_sales_invoice_konto_override_for_non_account_parent_mapping(self):
+		transactions = [
+			{
+				"Konto": "8400",
+				"Gegenkonto (ohne BU-Schlüssel)": "10001",
+				"BU-Schlüssel": "19",
+				"Belegfeld 1": "ACC-SINV-2026-00012",
+				"Beleginfo - Art 1": "Sales Invoice",
+			},
+			{
+				"Konto": "8300",
+				"Gegenkonto (ohne BU-Schlüssel)": "10001",
+				"BU-Schlüssel": "19",
+				"Belegfeld 1": "ACC-SINV-2026-00012",
+				"Beleginfo - Art 1": "Sales Invoice",
+			},
+			{
+				"Konto": "1776",
+				"Gegenkonto (ohne BU-Schlüssel)": "10001",
+				"BU-Schlüssel": "",
+				"Belegfeld 1": "ACC-PAY-0001",
+				"Beleginfo - Art 1": "Payment Entry",
+			},
+		]
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value={
+					"Sales Invoice": [
+						frappe._dict(
+							{
+								"map_to_field": "customer",
+								"map_to_column": "Konto",
+							}
+						)
+					],
+					"Payment Entry": [
+						frappe._dict(
+							{
+								"map_to_field": "reference_no",
+								"map_to_column": "Konto",
+							}
+						)
+					],
+				},
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				side_effect=[
+					frappe._dict({"name": "sales-invoice", "customer": "Test Customer"}),
+					frappe._dict({"name": "payment-entry", "reference_no": "mapped-payment"}),
+				],
+			),
+		):
+			mapped = apply_buchungsstapel_mapping(transactions, {"company": "_Test GmbH"})
+
+		sales_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Sales Invoice"]
+		self.assertEqual([row["Konto"] for row in sales_rows], ["Test Customer", "Test Customer"])
 
 		payment_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Payment Entry"]
 		self.assertEqual([row["Konto"] for row in payment_rows], ["mapped-payment"])
