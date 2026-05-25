@@ -239,55 +239,58 @@ def get_transactions(filters, as_dict=1):
 
 def group_sales_invoice_buchungsstapel(transactions, filters):
 	"""
-	Replace raw Sales Invoice GL rows with grouped invoice-item rows.
+	Replace raw invoice GL rows with grouped invoice-item rows.
 
-	The customer expects one Buchungsstapel row per Sales Invoice item account
-	group, not one row per GL Entry row. Items sharing the same DATEV account and
-	BU key are combined into one export line.
+	The customer expects one Buchungsstapel row per invoice item account group,
+	not one row per GL Entry row. Items sharing the same DATEV account and BU key
+	are combined into one export line.
 	"""
 	if not transactions:
 		return transactions
 
 	grouped_transactions = []
-	sales_rows_by_voucher = {}
+	invoice_rows_by_voucher = {}
 
 	for row in transactions:
-		if row.get("Beleginfo - Art 1") == "Sales Invoice" and row.get("Belegfeld 1"):
-			sales_rows_by_voucher.setdefault(row.get("Belegfeld 1"), []).append(row)
+		voucher_type = row.get("Beleginfo - Art 1")
+		if voucher_type in {"Sales Invoice", "Purchase Invoice"} and row.get("Belegfeld 1"):
+			invoice_rows_by_voucher.setdefault((voucher_type, row.get("Belegfeld 1")), []).append(row)
 			continue
 
 		grouped_transactions.append(row)
 
-	for voucher_no, voucher_rows in sales_rows_by_voucher.items():
-		grouped_transactions.extend(get_grouped_sales_invoice_rows(voucher_no, voucher_rows, filters))
+	for (voucher_type, voucher_no), voucher_rows in invoice_rows_by_voucher.items():
+		grouped_transactions.extend(
+			get_grouped_invoice_rows(voucher_type, voucher_no, voucher_rows, filters)
+		)
 
 	return sorted(grouped_transactions, key=lambda row: row.get("Belegdatum"))
 
 
-def get_grouped_sales_invoice_rows(voucher_no, voucher_rows, filters):
-	sales_invoice = load_voucher_doc("Sales Invoice", voucher_no)
-	if not sales_invoice:
+def get_grouped_invoice_rows(voucher_type, voucher_no, voucher_rows, filters):
+	voucher_doc = load_voucher_doc(voucher_type, voucher_no)
+	if not voucher_doc:
 		return voucher_rows
 
-	base_row = get_sales_invoice_base_row(voucher_rows)
-	gegenkonto = get_sales_invoice_gegenkonto(sales_invoice, base_row, filters)
+	base_row = get_invoice_base_row(voucher_rows)
+	gegenkonto = get_invoice_gegenkonto(voucher_type, voucher_doc, base_row, filters)
 	grouped_rows = {}
 
-	for item in sales_invoice.get("items") or []:
-		konto = get_sales_invoice_item_konto(item, filters.get("company"))
+	for item in voucher_doc.get("items") or []:
+		konto = get_invoice_item_konto(voucher_type, item, filters.get("company"))
 		if not konto:
 			continue
 
-		amount = get_sales_invoice_item_amount(item)
+		amount = get_invoice_item_amount(item)
 		if amount == 0:
 			continue
 
 		bu_schluessel = item.get("custom_bu_schlussel") or ""
-		tax_grouping_key = get_sales_invoice_item_tax_grouping_key(item)
+		tax_grouping_key = get_invoice_item_tax_grouping_key(item)
 		group_key = (konto, tax_grouping_key)
 
 		if group_key not in grouped_rows:
-			grouped_rows[group_key] = make_grouped_sales_invoice_row(
+			grouped_rows[group_key] = make_grouped_invoice_row(
 				base_row=base_row,
 				konto=konto,
 				gegenkonto=gegenkonto,
@@ -299,9 +302,7 @@ def get_grouped_sales_invoice_rows(voucher_no, voucher_rows, filters):
 		existing_amount = Decimal(str(grouped_rows[group_key]["Umsatz (ohne Soll/Haben-Kz)"]))
 		total_amount = existing_amount + amount
 		grouped_rows[group_key]["Umsatz (ohne Soll/Haben-Kz)"] = abs(total_amount)
-		grouped_rows[group_key]["Soll/Haben-Kennzeichen"] = get_sales_invoice_amount_indicator(
-			total_amount
-		)
+		grouped_rows[group_key]["Soll/Haben-Kennzeichen"] = get_invoice_amount_indicator(total_amount)
 
 	if grouped_rows:
 		return list(grouped_rows.values())
@@ -309,56 +310,81 @@ def get_grouped_sales_invoice_rows(voucher_no, voucher_rows, filters):
 	return voucher_rows
 
 
-def get_sales_invoice_base_row(voucher_rows):
+def get_invoice_base_row(voucher_rows):
 	for row in voucher_rows:
-		if row.get("Beleginfo - Art 3") == "Customer":
+		if row.get("Beleginfo - Art 3") in {"Customer", "Supplier"}:
 			return dict(row)
 
 	return dict(voucher_rows[0])
 
 
-def get_sales_invoice_gegenkonto(sales_invoice, base_row, filters):
-	debtor_number = frappe.db.get_value(
-		"Party Account",
-		{
-			"parent": sales_invoice.customer,
-			"parenttype": "Customer",
-			"company": sales_invoice.company,
-		},
-		"debtor_creditor_number",
-	)
-	if debtor_number:
-		return debtor_number
+def get_invoice_gegenkonto(voucher_type, voucher_doc, base_row, filters):
+	if voucher_type == "Sales Invoice":
+		return get_party_account_number(
+			party_type="Customer",
+			party=voucher_doc.customer,
+			company=voucher_doc.company,
+			primary_account=voucher_doc.debit_to,
+			base_row=base_row,
+			filters=filters,
+		)
 
-	debit_to_account_number = frappe.db.get_value("Account", sales_invoice.debit_to, "account_number")
-	if debit_to_account_number:
-		return debit_to_account_number
+	if voucher_type == "Purchase Invoice":
+		return get_party_account_number(
+			party_type="Supplier",
+			party=voucher_doc.supplier,
+			company=voucher_doc.company,
+			primary_account=voucher_doc.credit_to,
+			base_row=base_row,
+			filters=filters,
+		)
 
 	return base_row.get("Gegenkonto (ohne BU-Schlüssel)") or filters.get("against_account") or ""
 
 
-def get_sales_invoice_item_konto(item, company):
+def get_party_account_number(party_type, party, company, primary_account, base_row, filters):
+	debtor_or_creditor_number = frappe.db.get_value(
+		"Party Account",
+		{
+			"parent": party,
+			"parenttype": party_type,
+			"company": company,
+		},
+		"debtor_creditor_number",
+	)
+	if debtor_or_creditor_number:
+		return debtor_or_creditor_number
+
+	account_number = frappe.db.get_value("Account", primary_account, "account_number")
+	if account_number:
+		return account_number
+
+	return base_row.get("Gegenkonto (ohne BU-Schlüssel)") or filters.get("against_account") or ""
+
+
+def get_invoice_item_konto(voucher_type, item, company):
 	if item.get("custom_datev_account_no"):
 		return item.get("custom_datev_account_no")
 
-	if item.get("income_account"):
-		account_number = frappe.db.get_value("Account", item.get("income_account"), "account_number")
+	account_field = "income_account" if voucher_type == "Sales Invoice" else "expense_account"
+	if item.get(account_field):
+		account_number = frappe.db.get_value("Account", item.get(account_field), "account_number")
 		if account_number:
 			return account_number
 
 	if item.get("item_code") and company:
-		default_income_account = frappe.db.get_value(
+		default_account = frappe.db.get_value(
 			"Item Default",
 			{"parent": item.get("item_code"), "company": company},
-			"income_account",
+			account_field,
 		)
-		if default_income_account:
-			return frappe.db.get_value("Account", default_income_account, "account_number")
+		if default_account:
+			return frappe.db.get_value("Account", default_account, "account_number")
 
 	return ""
 
 
-def get_sales_invoice_item_amount(item):
+def get_invoice_item_amount(item):
 	amount = item.get("base_net_amount")
 	if amount in (None, ""):
 		amount = item.get("base_amount")
@@ -370,36 +396,36 @@ def get_sales_invoice_item_amount(item):
 	return Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def get_sales_invoice_item_tax_grouping_key(item):
+def get_invoice_item_tax_grouping_key(item):
 	parts = []
 	for fieldname in ("item_tax_template", "item_tax_rate", "custom_bu_schlussel"):
 		value = item.get(fieldname)
 		if value in (None, "", {}, []):
 			continue
 
-		parts.append("{}:{}".format(fieldname, normalize_sales_invoice_grouping_value(value)))
+		parts.append("{}:{}".format(fieldname, normalize_invoice_grouping_value(value)))
 
 	return "|".join(parts)
 
 
-def normalize_sales_invoice_grouping_value(value):
+def normalize_invoice_grouping_value(value):
 	if isinstance(value, (dict, list)):
 		return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 	return str(value)
 
 
-def make_grouped_sales_invoice_row(base_row, konto, gegenkonto, bu_schluessel, amount):
+def make_grouped_invoice_row(base_row, konto, gegenkonto, bu_schluessel, amount):
 	row = dict(base_row)
 	row["Umsatz (ohne Soll/Haben-Kz)"] = abs(amount)
-	row["Soll/Haben-Kennzeichen"] = get_sales_invoice_amount_indicator(amount)
+	row["Soll/Haben-Kennzeichen"] = get_invoice_amount_indicator(amount)
 	row["Konto"] = konto
 	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
 	row["BU-Schlüssel"] = bu_schluessel
 	return row
 
 
-def get_sales_invoice_amount_indicator(amount):
+def get_invoice_amount_indicator(amount):
 	return "H" if amount >= 0 else "S"
 
 
