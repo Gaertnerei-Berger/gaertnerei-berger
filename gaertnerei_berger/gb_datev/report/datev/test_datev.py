@@ -608,6 +608,10 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 			{row["Gegenkonto (ohne BU-Schlüssel)"] for row in purchase_rows},
 			{"70001"},
 		)
+		self.assertEqual(
+			{(row["Konto"], row["Soll/Haben-Kennzeichen"]) for row in purchase_rows},
+			{("3400", "S"), ("3300", "S")},
+		)
 
 		other_rows = [row for row in grouped if row["Beleginfo - Art 1"] != "Purchase Invoice"]
 		self.assertEqual(len(other_rows), 1)

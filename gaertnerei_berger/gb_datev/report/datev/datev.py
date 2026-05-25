@@ -291,6 +291,7 @@ def get_grouped_invoice_rows(voucher_type, voucher_no, voucher_rows, filters):
 
 		if group_key not in grouped_rows:
 			grouped_rows[group_key] = make_grouped_invoice_row(
+				voucher_type=voucher_type,
 				base_row=base_row,
 				konto=konto,
 				gegenkonto=gegenkonto,
@@ -302,7 +303,9 @@ def get_grouped_invoice_rows(voucher_type, voucher_no, voucher_rows, filters):
 		existing_amount = Decimal(str(grouped_rows[group_key]["Umsatz (ohne Soll/Haben-Kz)"]))
 		total_amount = existing_amount + amount
 		grouped_rows[group_key]["Umsatz (ohne Soll/Haben-Kz)"] = abs(total_amount)
-		grouped_rows[group_key]["Soll/Haben-Kennzeichen"] = get_invoice_amount_indicator(total_amount)
+		grouped_rows[group_key]["Soll/Haben-Kennzeichen"] = get_grouped_invoice_amount_indicator(
+			voucher_type, total_amount
+		)
 
 	if grouped_rows:
 		return list(grouped_rows.values())
@@ -415,17 +418,20 @@ def normalize_invoice_grouping_value(value):
 	return str(value)
 
 
-def make_grouped_invoice_row(base_row, konto, gegenkonto, bu_schluessel, amount):
+def make_grouped_invoice_row(voucher_type, base_row, konto, gegenkonto, bu_schluessel, amount):
 	row = dict(base_row)
 	row["Umsatz (ohne Soll/Haben-Kz)"] = abs(amount)
-	row["Soll/Haben-Kennzeichen"] = get_invoice_amount_indicator(amount)
+	row["Soll/Haben-Kennzeichen"] = get_grouped_invoice_amount_indicator(voucher_type, amount)
 	row["Konto"] = konto
 	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
 	row["BU-Schlüssel"] = bu_schluessel
 	return row
 
 
-def get_invoice_amount_indicator(amount):
+def get_grouped_invoice_amount_indicator(voucher_type, amount):
+	if voucher_type == "Purchase Invoice":
+		return "S" if amount >= 0 else "H"
+
 	return "H" if amount >= 0 else "S"
 
 
