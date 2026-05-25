@@ -560,6 +560,71 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual([row["BU-Schlüssel"] for row in payment_rows], ["mapped-payment"])
 		self.assertEqual(resolve_map.call_count, 1)
 
+	def test_preserves_purchase_invoice_bu_schluessel_from_mapping_override(self):
+		transactions = [
+			{
+				"Konto": "3400",
+				"Gegenkonto (ohne BU-Schlüssel)": "70000",
+				"BU-Schlüssel": "9",
+				"Belegfeld 1": "ACC-PINV-2026-00011",
+				"Beleginfo - Art 1": "Purchase Invoice",
+			},
+			{
+				"Konto": "1576",
+				"Gegenkonto (ohne BU-Schlüssel)": "70000",
+				"BU-Schlüssel": "",
+				"Belegfeld 1": "ACC-PAY-0001",
+				"Beleginfo - Art 1": "Payment Entry",
+			},
+		]
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value={
+					"Purchase Invoice": [
+						frappe._dict(
+							{
+								"map_to_field": "custom_bu_schlussel",
+								"map_to_column": "BU-Schlüssel",
+							}
+						)
+					],
+					"Payment Entry": [
+						frappe._dict(
+							{
+								"map_to_field": "reference_no",
+								"map_to_column": "BU-Schlüssel",
+							}
+						)
+					],
+				},
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				side_effect=[
+					frappe._dict({"name": "purchase-invoice"}),
+					frappe._dict({"name": "payment-entry"}),
+				],
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.resolve_map_to_value",
+				return_value="mapped-payment",
+			) as resolve_map,
+		):
+			mapped = apply_buchungsstapel_mapping(transactions, {"company": "_Test GmbH"})
+
+		purchase_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Purchase Invoice"]
+		self.assertEqual([row["BU-Schlüssel"] for row in purchase_rows], ["9"])
+
+		payment_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Payment Entry"]
+		self.assertEqual([row["BU-Schlüssel"] for row in payment_rows], ["mapped-payment"])
+		self.assertEqual(resolve_map.call_count, 1)
+
 	def test_applies_grouped_sales_invoice_konto_from_parent_mapping_override(self):
 		transactions = [
 			{

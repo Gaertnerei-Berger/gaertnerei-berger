@@ -631,17 +631,17 @@ def apply_buchungsstapel_mapping(transactions, filters):
 
 
 def should_preserve_existing_mapped_value(row, mapping):
-	if should_preserve_existing_bu_schluessel(row, mapping):
+	if should_preserve_existing_item_bu_schluessel(row, mapping):
 		return True
 
 	return False
 
 
-def should_preserve_existing_bu_schluessel(row, mapping):
+def should_preserve_existing_item_bu_schluessel(row, mapping):
 	if mapping.get("map_to_column") != "BU-Schlüssel":
 		return False
 
-	if row.get("Beleginfo - Art 1") != "Sales Invoice":
+	if row.get("Beleginfo - Art 1") not in {"Sales Invoice", "Purchase Invoice"}:
 		return False
 
 	return bool(row.get("BU-Schlüssel"))
