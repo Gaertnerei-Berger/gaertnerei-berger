@@ -488,6 +488,135 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual(len(other_rows), 1)
 		self.assertEqual(other_rows[0]["Belegfeld 1"], "ACC-PAY-0001")
 
+	def test_groups_purchase_invoice_rows_by_expense_account_and_tax_match(self):
+		transactions = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 42,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "70000",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "PINV-260007",
+				"Buchungstext": "Accounting Entry for Purchase Invoice",
+				"Beleginfo - Art 1": "Purchase Invoice",
+				"Beleginfo - Inhalt 1": "PINV-260007",
+				"Beleginfo - Art 3": "Supplier",
+				"Beleginfo - Inhalt 3": "Test Supplier",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 10,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "3400",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "PINV-260007",
+				"Buchungstext": "Accounting Entry for Purchase Invoice",
+				"Beleginfo - Art 1": "Purchase Invoice",
+				"Beleginfo - Inhalt 1": "PINV-260007",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 7.5,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "1406",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "PINV-260007",
+				"Buchungstext": "Accounting Entry for Purchase Invoice",
+				"Beleginfo - Art 1": "Purchase Invoice",
+				"Beleginfo - Inhalt 1": "PINV-260007",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 5,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "1776",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-PAY-0001",
+				"Buchungstext": "Payment Entry",
+				"Beleginfo - Art 1": "Payment Entry",
+				"Beleginfo - Inhalt 1": "ACC-PAY-0001",
+			},
+		]
+		purchase_invoice = frappe._dict(
+			{
+				"name": "PINV-260007",
+				"company": "_Test GmbH",
+				"supplier": "Test Supplier",
+				"credit_to": "Creditors - _TG",
+				"items": [
+					frappe._dict(
+						{
+							"expense_account": "Expense A",
+							"custom_bu_schlussel": "",
+							"item_tax_template": "DE Standard 19",
+							"base_net_amount": 10,
+						}
+					),
+					frappe._dict(
+						{
+							"expense_account": "Expense A",
+							"custom_bu_schlussel": "",
+							"item_tax_template": "DE Standard 19",
+							"base_net_amount": 15,
+						}
+					),
+					frappe._dict(
+						{
+							"expense_account": "Expense A",
+							"custom_bu_schlussel": "",
+							"item_tax_template": "DE Reduced 7",
+							"base_net_amount": 7,
+						}
+					),
+					frappe._dict(
+						{
+							"expense_account": "Expense B",
+							"custom_bu_schlussel": "",
+							"item_tax_template": "DE Standard 19",
+							"base_net_amount": 9,
+						}
+					),
+				],
+			}
+		)
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=purchase_invoice,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.frappe.db.get_value",
+				side_effect=["70001", "3400", "3400", "3400", "3300"],
+			),
+		):
+			grouped = group_sales_invoice_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9999"}
+			)
+
+		purchase_rows = [row for row in grouped if row["Beleginfo - Art 1"] == "Purchase Invoice"]
+		self.assertEqual(len(purchase_rows), 3)
+		self.assertEqual(
+			{(row["Konto"], float(row["Umsatz (ohne Soll/Haben-Kz)"])) for row in purchase_rows},
+			{("3400", 25.0), ("3400", 7.0), ("3300", 9.0)},
+		)
+		self.assertEqual(
+			{row["Gegenkonto (ohne BU-Schlüssel)"] for row in purchase_rows},
+			{"70001"},
+		)
+		self.assertEqual(
+			{(row["Konto"], row["Soll/Haben-Kennzeichen"]) for row in purchase_rows},
+			{("3400", "S"), ("3300", "S")},
+		)
+
+		other_rows = [row for row in grouped if row["Beleginfo - Art 1"] != "Purchase Invoice"]
+		self.assertEqual(len(other_rows), 1)
+		self.assertEqual(other_rows[0]["Belegfeld 1"], "ACC-PAY-0001")
+
 	def test_preserves_grouped_sales_invoice_bu_schluessel_from_mapping_override(self):
 		transactions = [
 			{
@@ -555,6 +684,71 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 
 		sales_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Sales Invoice"]
 		self.assertEqual([row["BU-Schlüssel"] for row in sales_rows], ["19", "7"])
+
+		payment_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Payment Entry"]
+		self.assertEqual([row["BU-Schlüssel"] for row in payment_rows], ["mapped-payment"])
+		self.assertEqual(resolve_map.call_count, 1)
+
+	def test_preserves_purchase_invoice_bu_schluessel_from_mapping_override(self):
+		transactions = [
+			{
+				"Konto": "3400",
+				"Gegenkonto (ohne BU-Schlüssel)": "70000",
+				"BU-Schlüssel": "9",
+				"Belegfeld 1": "ACC-PINV-2026-00011",
+				"Beleginfo - Art 1": "Purchase Invoice",
+			},
+			{
+				"Konto": "1576",
+				"Gegenkonto (ohne BU-Schlüssel)": "70000",
+				"BU-Schlüssel": "",
+				"Belegfeld 1": "ACC-PAY-0001",
+				"Beleginfo - Art 1": "Payment Entry",
+			},
+		]
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value={
+					"Purchase Invoice": [
+						frappe._dict(
+							{
+								"map_to_field": "custom_bu_schlussel",
+								"map_to_column": "BU-Schlüssel",
+							}
+						)
+					],
+					"Payment Entry": [
+						frappe._dict(
+							{
+								"map_to_field": "reference_no",
+								"map_to_column": "BU-Schlüssel",
+							}
+						)
+					],
+				},
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				side_effect=[
+					frappe._dict({"name": "purchase-invoice"}),
+					frappe._dict({"name": "payment-entry"}),
+				],
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.resolve_map_to_value",
+				return_value="mapped-payment",
+			) as resolve_map,
+		):
+			mapped = apply_buchungsstapel_mapping(transactions, {"company": "_Test GmbH"})
+
+		purchase_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Purchase Invoice"]
+		self.assertEqual([row["BU-Schlüssel"] for row in purchase_rows], ["9"])
 
 		payment_rows = [row for row in mapped if row["Beleginfo - Art 1"] == "Payment Entry"]
 		self.assertEqual([row["BU-Schlüssel"] for row in payment_rows], ["mapped-payment"])
