@@ -167,6 +167,7 @@ def execute(filters=None):
 		filters.update({"against_account": temp, "opening_account": opening or temp})
 		data = get_transactions(filters)
 		data = group_sales_invoice_buchungsstapel(data, filters)
+		data = group_payment_entry_buchungsstapel(data, filters)
 		data = apply_buchungsstapel_mapping(data, filters)
 		data = [[row.get(column.get("fieldname")) for column in COLUMNS] for row in data]
 
@@ -435,6 +436,138 @@ def get_grouped_invoice_amount_indicator(voucher_type, amount):
 	return "H" if amount >= 0 else "S"
 
 
+def group_payment_entry_buchungsstapel(transactions, filters):
+	"""
+	Replace raw Payment Entry GL rows with one export row per voucher when safe.
+
+	Bank-driven receive/pay vouchers post one party row and one bank row. DATEV
+	export expects those paired entries as one line with account numbers on both
+	sides.
+	"""
+	if not transactions:
+		return transactions
+
+	grouped_transactions = []
+	payment_rows_by_voucher = {}
+
+	for row in transactions:
+		if row.get("Beleginfo - Art 1") == "Payment Entry" and row.get("Belegfeld 1"):
+			payment_rows_by_voucher.setdefault(row.get("Belegfeld 1"), []).append(row)
+			continue
+
+		grouped_transactions.append(row)
+
+	for voucher_no, voucher_rows in payment_rows_by_voucher.items():
+		grouped_transactions.extend(get_grouped_payment_entry_rows(voucher_no, voucher_rows, filters))
+
+	return sorted(grouped_transactions, key=lambda row: row.get("Belegdatum"))
+
+
+def get_grouped_payment_entry_rows(voucher_no, voucher_rows, filters):
+	if len(voucher_rows) != 2:
+		return voucher_rows
+
+	voucher_doc = load_voucher_doc("Payment Entry", voucher_no)
+	if not voucher_doc or voucher_doc.payment_type not in {"Receive", "Pay"}:
+		return voucher_rows
+
+	party_row = get_payment_entry_party_row(voucher_rows, voucher_doc)
+	bank_row = next((row for row in voucher_rows if row is not party_row), None)
+
+	konto, gegenkonto = get_payment_entry_export_accounts(
+		voucher_doc, party_row, bank_row, filters
+	)
+	if not konto or not gegenkonto:
+		return voucher_rows
+
+	base_row = dict(party_row or voucher_rows[0])
+	base_row["Konto"] = konto
+	base_row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
+	base_row["BU-Schlüssel"] = get_payment_entry_bu_schluessel(voucher_doc) or base_row.get(
+		"BU-Schlüssel"
+	) or ""
+	return [base_row]
+
+
+def get_payment_entry_party_row(voucher_rows, voucher_doc):
+	for row in voucher_rows:
+		if row.get("Beleginfo - Art 3") == voucher_doc.party_type:
+			return row
+
+	return None
+
+
+def get_payment_entry_export_accounts(voucher_doc, party_row, bank_row, filters):
+	if voucher_doc.payment_type == "Receive":
+		return (
+			get_payment_entry_party_or_account_number(
+				voucher_doc, voucher_doc.paid_from, party_row, filters
+			),
+			get_payment_entry_account_number(voucher_doc.paid_to, bank_row),
+		)
+
+	if voucher_doc.payment_type == "Pay":
+		return (
+			get_payment_entry_party_or_account_number(
+				voucher_doc, voucher_doc.paid_to, party_row, filters
+			),
+			get_payment_entry_account_number(voucher_doc.paid_from, bank_row),
+		)
+
+	return "", ""
+
+
+def get_payment_entry_account_number(account_name, fallback_row):
+	account_number = ""
+	if account_name:
+		account_number = frappe.db.get_value("Account", account_name, "account_number")
+	if account_number:
+		return account_number
+
+	if fallback_row:
+		return fallback_row.get("Konto") or ""
+
+	return ""
+
+
+def get_payment_entry_party_or_account_number(voucher_doc, account_name, fallback_row, filters):
+	if voucher_doc.party_type in {"Customer", "Supplier"} and voucher_doc.party:
+		return get_party_account_number(
+			party_type=voucher_doc.party_type,
+			party=voucher_doc.party,
+			company=voucher_doc.company,
+			primary_account=account_name,
+			base_row=fallback_row or {},
+			filters=filters,
+		)
+
+	return get_payment_entry_account_number(account_name, fallback_row)
+
+
+def get_payment_entry_bu_schluessel(voucher_doc):
+	bu_schluessel_values = set()
+
+	for reference in voucher_doc.get("references") or []:
+		reference_doctype = reference.get("reference_doctype")
+		reference_name = reference.get("reference_name")
+		if reference_doctype not in {"Sales Invoice", "Purchase Invoice"} or not reference_name:
+			continue
+
+		reference_doc = load_voucher_doc(reference_doctype, reference_name)
+		if not reference_doc:
+			continue
+
+		for item in reference_doc.get("items") or []:
+			bu_schluessel = item.get("custom_bu_schlussel")
+			if bu_schluessel not in (None, ""):
+				bu_schluessel_values.add(str(bu_schluessel))
+
+	if len(bu_schluessel_values) == 1:
+		return next(iter(bu_schluessel_values))
+
+	return ""
+
+
 def get_payment_entry_params(filters):
 	extra_fields = """
 		, 'Zahlungsreferenz' as 'Beleginfo - Art 5'
@@ -657,7 +790,11 @@ def apply_buchungsstapel_mapping(transactions, filters):
 			if value is None:
 				continue
 
-			row[mapping.get("map_to_column")] = normalize_mapped_value(value)
+			row[mapping.get("map_to_column")] = normalize_mapped_value(
+				value,
+				map_to_column=mapping.get("map_to_column"),
+				account_name_to_number=account_name_to_number,
+			)
 
 	return transactions
 
@@ -830,11 +967,17 @@ def select_matching_child_row(
 	return child_rows[0]
 
 
-def normalize_mapped_value(value):
+def normalize_mapped_value(value, map_to_column=None, account_name_to_number=None):
 	if isinstance(value, datetime):
 		return value
 	if isinstance(value, date):
 		return value
+	if (
+		map_to_column in {"Konto", "Gegenkonto (ohne BU-Schlüssel)"}
+		and account_name_to_number
+		and value in account_name_to_number
+	):
+		return account_name_to_number[value]
 	return str(value)
 
 
@@ -1028,6 +1171,7 @@ def download_datev_csv(filters):
 
 	transactions = get_transactions(filters)
 	transactions = group_sales_invoice_buchungsstapel(transactions, filters)
+	transactions = group_payment_entry_buchungsstapel(transactions, filters)
 	transactions = apply_buchungsstapel_mapping(transactions, filters)
 	account_names = get_account_names(filters)
 	customers = get_customers(filters)
