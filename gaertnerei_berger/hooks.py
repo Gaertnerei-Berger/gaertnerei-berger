@@ -25,6 +25,7 @@ fixtures = [
 					"Payment Entry-custom_datev_section",
 					"Payment Entry-custom_datev_account_no",
 					"Payment Entry-custom_datev_against_account_no",
+					"Payment Entry-custom_datev_end_section",
 					"Purchase Invoice-custom_datev_section",
 					"Purchase Invoice-custom_datev_account_no",
 					"Purchase Invoice-custom_datev_end_section",
