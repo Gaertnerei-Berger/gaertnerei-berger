@@ -483,9 +483,7 @@ def get_grouped_payment_entry_rows(voucher_no, voucher_rows, filters):
 	base_row = dict(party_row or voucher_rows[0])
 	base_row["Konto"] = konto
 	base_row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
-	base_row["BU-Schlüssel"] = get_payment_entry_bu_schluessel(voucher_doc) or base_row.get(
-		"BU-Schlüssel"
-	) or ""
+	base_row["BU-Schlüssel"] = ""
 	return [base_row]
 
 

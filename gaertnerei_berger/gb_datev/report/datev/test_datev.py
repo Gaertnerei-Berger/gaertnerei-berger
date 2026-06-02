@@ -628,7 +628,7 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual(len(other_rows), 1)
 		self.assertEqual(other_rows[0]["Belegfeld 1"], "ACC-PAY-0001")
 
-	def test_groups_payment_entry_rows_with_party_number_and_reference_bu(self):
+	def test_groups_receive_payment_entry_rows_with_blank_bu_schluessel(self):
 		transactions = [
 			{
 				"Umsatz (ohne Soll/Haben-Kz)": 119,
@@ -666,30 +666,13 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 				"company": "_Test GmbH",
 				"paid_from": "Debtors - _TG",
 				"paid_to": "Bank - _TG",
-				"references": [
-					frappe._dict(
-						{
-							"reference_doctype": "Sales Invoice",
-							"reference_name": "ACC-SINV-2026-00021",
-						}
-					)
-				],
-			}
-		)
-		sales_invoice = frappe._dict(
-			{
-				"name": "ACC-SINV-2026-00021",
-				"items": [
-					frappe._dict({"custom_bu_schlussel": "19"}),
-					frappe._dict({"custom_bu_schlussel": "19"}),
-				],
 			}
 		)
 
 		with (
 			patch(
 				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
-				side_effect=[payment_entry, sales_invoice],
+				return_value=payment_entry,
 			),
 			patch(
 				"gaertnerei_berger.gb_datev.report.datev.datev.get_party_account_number",
@@ -707,8 +690,73 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual(len(grouped), 1)
 		self.assertEqual(grouped[0]["Konto"], "10001")
 		self.assertEqual(grouped[0]["Gegenkonto (ohne BU-Schlüssel)"], "1200")
-		self.assertEqual(grouped[0]["BU-Schlüssel"], "19")
+		self.assertEqual(grouped[0]["BU-Schlüssel"], "")
 		self.assertEqual(grouped[0]["Soll/Haben-Kennzeichen"], "H")
+
+	def test_groups_pay_payment_entry_rows_with_blank_bu_schluessel(self):
+		transactions = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 119,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "1600",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "19",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-PAY-2026-00009",
+				"Buchungstext": "Payment Entry",
+				"Beleginfo - Art 1": "Payment Entry",
+				"Beleginfo - Inhalt 1": "ACC-PAY-2026-00009",
+				"Beleginfo - Art 3": "Supplier",
+				"Beleginfo - Inhalt 3": "Test Supplier",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 119,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "1200",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-PAY-2026-00009",
+				"Buchungstext": "Payment Entry",
+				"Beleginfo - Art 1": "Payment Entry",
+				"Beleginfo - Inhalt 1": "ACC-PAY-2026-00009",
+			},
+		]
+		payment_entry = frappe._dict(
+			{
+				"name": "ACC-PAY-2026-00009",
+				"payment_type": "Pay",
+				"party_type": "Supplier",
+				"party": "Test Supplier",
+				"company": "_Test GmbH",
+				"paid_from": "Bank - _TG",
+				"paid_to": "Creditors - _TG",
+			}
+		)
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=payment_entry,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_party_account_number",
+				return_value="70001",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_payment_entry_account_number",
+				return_value="1200",
+			),
+		):
+			grouped = group_payment_entry_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9999"}
+			)
+
+		self.assertEqual(len(grouped), 1)
+		self.assertEqual(grouped[0]["Konto"], "70001")
+		self.assertEqual(grouped[0]["Gegenkonto (ohne BU-Schlüssel)"], "1200")
+		self.assertEqual(grouped[0]["BU-Schlüssel"], "")
+		self.assertEqual(grouped[0]["Soll/Haben-Kennzeichen"], "S")
 
 	def test_leaves_complex_payment_entry_rows_untouched(self):
 		transactions = [
