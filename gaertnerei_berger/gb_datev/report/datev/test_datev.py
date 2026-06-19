@@ -628,6 +628,156 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual(len(other_rows), 1)
 		self.assertEqual(other_rows[0]["Belegfeld 1"], "ACC-PAY-0001")
 
+	def test_groups_negative_sales_invoice_rows_with_correct_total_amount(self):
+		transactions = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 42,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "1200",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "RG-260008",
+				"Buchungstext": "Accounting Entry for Sales Invoice",
+				"Beleginfo - Art 1": "Sales Invoice",
+				"Beleginfo - Inhalt 1": "RG-260008",
+				"Beleginfo - Art 3": "Customer",
+				"Beleginfo - Inhalt 3": "Test Customer",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 10,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "8400",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "RG-260008",
+				"Buchungstext": "Accounting Entry for Sales Invoice",
+				"Beleginfo - Art 1": "Sales Invoice",
+				"Beleginfo - Inhalt 1": "RG-260008",
+			},
+		]
+		sales_invoice = frappe._dict(
+			{
+				"name": "RG-260008",
+				"company": "_Test GmbH",
+				"customer": "Test Customer",
+				"debit_to": "Debtors - _TG",
+				"items": [
+					frappe._dict(
+						{
+							"custom_datev_account_no": "8400",
+							"custom_bu_schlussel": "",
+							"item_tax_template": "DE Standard 19",
+							"base_net_amount": -10,
+						}
+					),
+					frappe._dict(
+						{
+							"custom_datev_account_no": "8400",
+							"custom_bu_schlussel": "",
+							"item_tax_template": "DE Standard 19",
+							"base_net_amount": -15,
+						}
+					),
+				],
+			}
+		)
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=sales_invoice,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.frappe.db.get_value",
+				side_effect=["10001"],
+			),
+		):
+			grouped = group_sales_invoice_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9999"}
+			)
+
+		sales_rows = [row for row in grouped if row["Beleginfo - Art 1"] == "Sales Invoice"]
+		self.assertEqual(len(sales_rows), 1)
+		self.assertEqual(float(sales_rows[0]["Umsatz (ohne Soll/Haben-Kz)"]), 25.0)
+		self.assertEqual(sales_rows[0]["Soll/Haben-Kennzeichen"], "S")
+
+	def test_groups_negative_purchase_invoice_rows_with_correct_total_amount(self):
+		transactions = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 42,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "70000",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "PINV-260008",
+				"Buchungstext": "Accounting Entry for Purchase Invoice",
+				"Beleginfo - Art 1": "Purchase Invoice",
+				"Beleginfo - Inhalt 1": "PINV-260008",
+				"Beleginfo - Art 3": "Supplier",
+				"Beleginfo - Inhalt 3": "Test Supplier",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 10,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "3400",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "PINV-260008",
+				"Buchungstext": "Accounting Entry for Purchase Invoice",
+				"Beleginfo - Art 1": "Purchase Invoice",
+				"Beleginfo - Inhalt 1": "PINV-260008",
+			},
+		]
+		purchase_invoice = frappe._dict(
+			{
+				"name": "PINV-260008",
+				"company": "_Test GmbH",
+				"supplier": "Test Supplier",
+				"credit_to": "Creditors - _TG",
+				"items": [
+					frappe._dict(
+						{
+							"expense_account": "Expense A",
+							"custom_bu_schlussel": "",
+							"item_tax_template": "DE Standard 19",
+							"base_net_amount": -10,
+						}
+					),
+					frappe._dict(
+						{
+							"expense_account": "Expense A",
+							"custom_bu_schlussel": "",
+							"item_tax_template": "DE Standard 19",
+							"base_net_amount": -15,
+						}
+					),
+				],
+			}
+		)
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=purchase_invoice,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.frappe.db.get_value",
+				side_effect=["70001", "3400", "3400"],
+			),
+		):
+			grouped = group_sales_invoice_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9999"}
+			)
+
+		purchase_rows = [row for row in grouped if row["Beleginfo - Art 1"] == "Purchase Invoice"]
+		self.assertEqual(len(purchase_rows), 1)
+		self.assertEqual(float(purchase_rows[0]["Umsatz (ohne Soll/Haben-Kz)"]), 25.0)
+		self.assertEqual(purchase_rows[0]["Soll/Haben-Kennzeichen"], "H")
+
 	def test_groups_receive_payment_entry_rows_with_blank_bu_schluessel(self):
 		transactions = [
 			{
