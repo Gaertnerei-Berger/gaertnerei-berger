@@ -1013,7 +1013,7 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual(float(grouped[0]["Umsatz (ohne Soll/Haben-Kz)"]), 100.0)
 		self.assertEqual(grouped[0]["Soll/Haben-Kennzeichen"], "S")
 
-	def test_leaves_journal_entry_untouched_when_tax_account_has_no_unique_bu_schluessel(self):
+	def test_groups_journal_entry_when_tax_account_has_no_unique_bu_schluessel(self):
 		transactions = [
 			{
 				"Umsatz (ohne Soll/Haben-Kz)": 119,
@@ -1100,12 +1100,25 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_bu_schluessel",
 				return_value="",
 			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.is_journal_entry_tax_row",
+				side_effect=lambda row: row.account == "VAT 19 - _TG",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_party_account_number",
+				return_value="10001",
+			),
 		):
 			grouped = group_journal_entry_buchungsstapel(
 				transactions, {"company": "_Test GmbH", "against_account": "9999"}
 			)
 
-		self.assertEqual(grouped, transactions)
+		self.assertEqual(len(grouped), 1)
+		self.assertEqual(grouped[0]["Konto"], "8400")
+		self.assertEqual(grouped[0]["Gegenkonto (ohne BU-Schlüssel)"], "10001")
+		self.assertEqual(grouped[0]["BU-Schlüssel"], "")
+		self.assertEqual(float(grouped[0]["Umsatz (ohne Soll/Haben-Kz)"]), 100.0)
+		self.assertEqual(grouped[0]["Soll/Haben-Kennzeichen"], "H")
 
 	def test_preserves_grouped_sales_invoice_bu_schluessel_from_mapping_override(self):
 		transactions = [

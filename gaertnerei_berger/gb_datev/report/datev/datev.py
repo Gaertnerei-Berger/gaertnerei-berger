@@ -582,8 +582,6 @@ def get_grouped_journal_entry_rows(voucher_no, voucher_rows, filters):
 		return voucher_rows
 
 	bu_schluessel = get_journal_entry_bu_schluessel(tax_row)
-	if not bu_schluessel:
-		return voucher_rows
 
 	base_row = get_journal_entry_base_row(voucher_rows, party_row)
 	konto = get_journal_entry_export_account_number(business_row)
@@ -647,7 +645,7 @@ def match_journal_entry_counter_rows(party_row, counter_rows):
 	if len(counter_rows) != 2:
 		return None, None, None
 
-	tax_rows = [row for row in counter_rows if get_journal_entry_bu_schluessel(row)]
+	tax_rows = [row for row in counter_rows if is_journal_entry_tax_row(row)]
 	if len(tax_rows) != 1:
 		return None, None, None
 
@@ -724,10 +722,25 @@ def get_journal_entry_bu_schluessel(row):
 	return next(iter(matches))
 
 
+def is_journal_entry_tax_row(row):
+	account_name = row.get("account")
+	if not account_name:
+		return False
+
+	return account_name in get_item_tax_template_accounts()
+
+
+def get_item_tax_template_accounts():
+	return set(build_item_tax_template_bu_schluessel_by_account(include_blank=True))
+
+
 def get_item_tax_template_bu_schluessel_by_account():
+	return build_item_tax_template_bu_schluessel_by_account(include_blank=False)
+
+
+def build_item_tax_template_bu_schluessel_by_account(include_blank=False):
 	template_rows = frappe.get_all(
 		"Item Tax Template",
-		filters={"custom_bu_schlussel": ["!=", ""]},
 		fields=["name", "custom_bu_schlussel"],
 		limit_page_length=0,
 	)
@@ -765,8 +778,12 @@ def get_item_tax_template_bu_schluessel_by_account():
 					if not account_name:
 						continue
 
+					bu_schluessel = template_row.custom_bu_schlussel
+					if bu_schluessel in (None, "") and not include_blank:
+						continue
+
 					bu_schluessel_by_account.setdefault(account_name, set()).add(
-						str(template_row.custom_bu_schlussel)
+						"" if bu_schluessel in (None, "") else str(bu_schluessel)
 					)
 
 	return bu_schluessel_by_account
