@@ -1428,6 +1428,7 @@ def download_datev_csv(filters):
 	transactions = get_transactions(filters)
 	transactions = group_sales_invoice_buchungsstapel(transactions, filters)
 	transactions = group_payment_entry_buchungsstapel(transactions, filters)
+	transactions = group_journal_entry_buchungsstapel(transactions, filters)
 	transactions = apply_buchungsstapel_mapping(transactions, filters)
 	account_names = get_account_names(filters)
 	customers = get_customers(filters)

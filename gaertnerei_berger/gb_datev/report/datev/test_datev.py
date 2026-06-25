@@ -375,6 +375,115 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 			journal_grouped_transactions, get_transactions_mock.call_args.args[0]
 		)
 
+	def test_download_applies_journal_entry_grouping_before_csv_export(self):
+		raw_transactions = [
+			{
+				"Konto": "4400",
+				"Gegenkonto (ohne BU-Schlüssel)": "10483",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00003",
+				"Beleginfo - Art 1": "Journal Entry",
+			}
+		]
+		sales_grouped_transactions = list(raw_transactions)
+		payment_grouped_transactions = list(sales_grouped_transactions)
+		journal_grouped_transactions = [
+			{
+				"Konto": "4400",
+				"Gegenkonto (ohne BU-Schlüssel)": "10483",
+				"BU-Schlüssel": "19",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00003",
+				"Beleginfo - Art 1": "Journal Entry",
+			}
+		]
+		mapped_transactions = list(journal_grouped_transactions)
+		filters = {
+			"company": "_Test GmbH",
+			"from_date": today(),
+			"to_date": today(),
+			"voucher_type": "Journal Entry",
+		}
+		datev_settings = frappe._dict(
+			{
+				"account_number_length": 4,
+				"temporary_against_account_number": "9999",
+				"opening_against_account_number": "9998",
+			}
+		)
+
+		with (
+			patch("gaertnerei_berger.gb_datev.report.datev.datev.frappe.only_for"),
+			patch("gaertnerei_berger.gb_datev.report.datev.datev.validate"),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_fiscal_year",
+				return_value=("2026", today()),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.frappe.get_value",
+				return_value="SKR04 mit Kontonummern",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.frappe.get_doc",
+				return_value=datev_settings,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_transactions",
+				return_value=raw_transactions,
+			) as get_transactions_mock,
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.group_sales_invoice_buchungsstapel",
+				return_value=sales_grouped_transactions,
+			) as sales_group_mock,
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.group_payment_entry_buchungsstapel",
+				return_value=payment_grouped_transactions,
+			) as payment_group_mock,
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.group_journal_entry_buchungsstapel",
+				return_value=journal_grouped_transactions,
+			) as journal_group_mock,
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.apply_buchungsstapel_mapping",
+				return_value=mapped_transactions,
+			) as map_mock,
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_names",
+				return_value=[],
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_customers",
+				return_value=[],
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_suppliers",
+				return_value=[],
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_datev_csv",
+				return_value="csv-data",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.zip_and_download",
+			) as zip_mock,
+		):
+			download_datev_csv(filters)
+
+		self.assertEqual(get_transactions_mock.call_args.args[0]["against_account"], "9999")
+		self.assertEqual(get_transactions_mock.call_args.args[0]["opening_account"], "9998")
+		sales_group_mock.assert_called_once_with(raw_transactions, get_transactions_mock.call_args.args[0])
+		payment_group_mock.assert_called_once_with(
+			sales_grouped_transactions, get_transactions_mock.call_args.args[0]
+		)
+		journal_group_mock.assert_called_once_with(
+			payment_grouped_transactions, get_transactions_mock.call_args.args[0]
+		)
+		map_mock.assert_called_once_with(
+			journal_grouped_transactions, get_transactions_mock.call_args.args[0]
+		)
+		self.assertTrue(zip_mock.called)
+
 	def test_groups_sales_invoice_rows_only_when_account_and_tax_match(self):
 		transactions = [
 			{
