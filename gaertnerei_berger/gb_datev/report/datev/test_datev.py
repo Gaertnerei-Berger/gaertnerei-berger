@@ -15,6 +15,7 @@ from gaertnerei_berger.gb_datev.report.datev.datev import (
 	execute,
 	get_account_names,
 	get_customers,
+	get_journal_entry_bu_schluessel,
 	group_payment_entry_buchungsstapel,
 	group_journal_entry_buchungsstapel,
 	group_sales_invoice_buchungsstapel,
@@ -1697,3 +1698,43 @@ class TestDatevPaymentEntryGrouping(TestCase):
 			mapped = apply_buchungsstapel_mapping(transactions, {"company": "_Test GmbH"})
 
 		self.assertEqual(mapped[0]["Gegenkonto (ohne BU-Schlüssel)"], "1800")
+
+
+class TestDatevJournalEntryBuSchluessel(TestCase):
+	def test_falls_back_to_unique_tax_rate_when_tax_account_is_purchase_vat(self):
+		row = frappe._dict({"account": "Input VAT 19 - _TG"})
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_item_tax_template_bu_schluessel_by_account",
+				return_value={},
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_item_tax_template_bu_schluessel_by_tax_rate",
+				return_value={"19": {"19"}},
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.frappe.db.get_value",
+				return_value=19.0,
+			),
+		):
+			self.assertEqual(get_journal_entry_bu_schluessel(row), "19")
+
+	def test_does_not_use_ambiguous_tax_rate_fallback(self):
+		row = frappe._dict({"account": "Input VAT 19 - _TG"})
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_item_tax_template_bu_schluessel_by_account",
+				return_value={},
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_item_tax_template_bu_schluessel_by_tax_rate",
+				return_value={"19": {"19", "94"}},
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.frappe.db.get_value",
+				return_value=19.0,
+			),
+		):
+			self.assertEqual(get_journal_entry_bu_schluessel(row), "")

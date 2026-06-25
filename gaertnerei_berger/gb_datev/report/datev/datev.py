@@ -716,6 +716,18 @@ def get_journal_entry_bu_schluessel(row):
 
 	bu_schluessel_by_account = get_item_tax_template_bu_schluessel_by_account()
 	matches = bu_schluessel_by_account.get(row.get("account")) or set()
+	if matches:
+		if len(matches) != 1:
+			return ""
+		return next(iter(matches))
+
+	bu_schluessel_by_tax_rate = get_item_tax_template_bu_schluessel_by_tax_rate()
+	tax_rate = frappe.db.get_value("Account", row.get("account"), "tax_rate")
+	normalized_tax_rate = normalize_tax_rate_key(tax_rate)
+	if not normalized_tax_rate:
+		return ""
+
+	matches = bu_schluessel_by_tax_rate.get(normalized_tax_rate) or set()
 	if len(matches) != 1:
 		return ""
 
@@ -736,6 +748,10 @@ def get_item_tax_template_accounts():
 
 def get_item_tax_template_bu_schluessel_by_account():
 	return build_item_tax_template_bu_schluessel_by_account(include_blank=False)
+
+
+def get_item_tax_template_bu_schluessel_by_tax_rate():
+	return build_item_tax_template_bu_schluessel_by_tax_rate(include_blank=False)
 
 
 def build_item_tax_template_bu_schluessel_by_account(include_blank=False):
@@ -787,6 +803,51 @@ def build_item_tax_template_bu_schluessel_by_account(include_blank=False):
 					)
 
 	return bu_schluessel_by_account
+
+
+def build_item_tax_template_bu_schluessel_by_tax_rate(include_blank=False):
+	template_rows = frappe.get_all(
+		"Item Tax Template",
+		fields=["name", "custom_bu_schlussel"],
+		limit_page_length=0,
+	)
+	if not template_rows:
+		return {}
+
+	template_meta = frappe.get_meta("Item Tax Template")
+	table_fields = [df for df in template_meta.fields if df.fieldtype == "Table" and df.options]
+	if not table_fields:
+		return {}
+
+	bu_schluessel_by_tax_rate = {}
+
+	for template_row in template_rows:
+		template_doc = load_voucher_doc("Item Tax Template", template_row.name)
+		if not template_doc:
+			continue
+
+		for table_df in table_fields:
+			for child_row in template_doc.get(table_df.fieldname) or []:
+				tax_rate = normalize_tax_rate_key(child_row.get("tax_rate"))
+				if not tax_rate:
+					continue
+
+				bu_schluessel = template_row.custom_bu_schlussel
+				if bu_schluessel in (None, "") and not include_blank:
+					continue
+
+				bu_schluessel_by_tax_rate.setdefault(tax_rate, set()).add(
+					"" if bu_schluessel in (None, "") else str(bu_schluessel)
+				)
+
+	return bu_schluessel_by_tax_rate
+
+
+def normalize_tax_rate_key(value):
+	if value in (None, ""):
+		return ""
+
+	return str(Decimal(str(value)).normalize())
 
 
 def get_journal_entry_base_row(voucher_rows, party_row):
