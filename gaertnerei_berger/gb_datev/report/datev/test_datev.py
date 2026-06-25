@@ -1004,6 +1004,10 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 				side_effect=lambda row: "19" if row.account == "VAT 19 - _TG" else "",
 			),
 			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.is_journal_entry_tax_row",
+				side_effect=lambda row: row.account == "VAT 19 - _TG",
+			),
+			patch(
 				"gaertnerei_berger.gb_datev.report.datev.datev.get_party_account_number",
 				return_value="10001",
 			),
@@ -1105,6 +1109,10 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 			patch(
 				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_bu_schluessel",
 				side_effect=lambda row: "19" if row.account == "Input VAT 19 - _TG" else "",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.is_journal_entry_tax_row",
+				side_effect=lambda row: row.account == "Input VAT 19 - _TG",
 			),
 			patch(
 				"gaertnerei_berger.gb_datev.report.datev.datev.get_party_account_number",
