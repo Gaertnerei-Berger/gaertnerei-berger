@@ -716,18 +716,6 @@ def get_journal_entry_bu_schluessel(row):
 
 	bu_schluessel_by_account = get_item_tax_template_bu_schluessel_by_account()
 	matches = bu_schluessel_by_account.get(row.get("account")) or set()
-	if matches:
-		if len(matches) != 1:
-			return ""
-		return next(iter(matches))
-
-	bu_schluessel_by_tax_rate = get_item_tax_template_bu_schluessel_by_tax_rate()
-	tax_rate = frappe.db.get_value("Account", row.get("account"), "tax_rate")
-	normalized_tax_rate = normalize_tax_rate_key(tax_rate)
-	if not normalized_tax_rate:
-		return ""
-
-	matches = bu_schluessel_by_tax_rate.get(normalized_tax_rate) or set()
 	if len(matches) != 1:
 		return ""
 
