@@ -15,7 +15,9 @@ from gaertnerei_berger.gb_datev.report.datev.datev import (
 	execute,
 	get_account_names,
 	get_customers,
+	get_journal_entry_bu_schluessel,
 	group_payment_entry_buchungsstapel,
+	group_journal_entry_buchungsstapel,
 	group_sales_invoice_buchungsstapel,
 	get_suppliers,
 	get_transactions,
@@ -292,6 +294,7 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 			},
 		]
 		payment_grouped_transactions = list(grouped_transactions)
+		journal_grouped_transactions = list(payment_grouped_transactions)
 		mapped_transactions = [
 			{
 				"Konto": "4300",
@@ -336,6 +339,10 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 				return_value=payment_grouped_transactions,
 			) as payment_group_mock,
 			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.group_journal_entry_buchungsstapel",
+				return_value=journal_grouped_transactions,
+			) as journal_group_mock,
+			patch(
 				"gaertnerei_berger.gb_datev.report.datev.datev.apply_buchungsstapel_mapping",
 				return_value=mapped_transactions,
 			) as map_mock,
@@ -362,9 +369,121 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		payment_group_mock.assert_called_once_with(
 			grouped_transactions, get_transactions_mock.call_args.args[0]
 		)
-		map_mock.assert_called_once_with(
+		journal_group_mock.assert_called_once_with(
 			payment_grouped_transactions, get_transactions_mock.call_args.args[0]
 		)
+		map_mock.assert_called_once_with(
+			journal_grouped_transactions, get_transactions_mock.call_args.args[0]
+		)
+
+	def test_download_applies_journal_entry_grouping_before_csv_export(self):
+		raw_transactions = [
+			{
+				"Konto": "4400",
+				"Gegenkonto (ohne BU-Schlüssel)": "10483",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00003",
+				"Beleginfo - Art 1": "Journal Entry",
+			}
+		]
+		sales_grouped_transactions = list(raw_transactions)
+		payment_grouped_transactions = list(sales_grouped_transactions)
+		journal_grouped_transactions = [
+			{
+				"Konto": "4400",
+				"Gegenkonto (ohne BU-Schlüssel)": "10483",
+				"BU-Schlüssel": "19",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00003",
+				"Beleginfo - Art 1": "Journal Entry",
+			}
+		]
+		mapped_transactions = list(journal_grouped_transactions)
+		filters = {
+			"company": "_Test GmbH",
+			"from_date": today(),
+			"to_date": today(),
+			"voucher_type": "Journal Entry",
+		}
+		datev_settings = frappe._dict(
+			{
+				"account_number_length": 4,
+				"temporary_against_account_number": "9999",
+				"opening_against_account_number": "9998",
+			}
+		)
+
+		with (
+			patch("gaertnerei_berger.gb_datev.report.datev.datev.frappe.only_for"),
+			patch("gaertnerei_berger.gb_datev.report.datev.datev.validate"),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_fiscal_year",
+				return_value=("2026", today()),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.frappe.get_value",
+				return_value="SKR04 mit Kontonummern",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.frappe.get_doc",
+				return_value=datev_settings,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_transactions",
+				return_value=raw_transactions,
+			) as get_transactions_mock,
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.group_sales_invoice_buchungsstapel",
+				return_value=sales_grouped_transactions,
+			) as sales_group_mock,
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.group_payment_entry_buchungsstapel",
+				return_value=payment_grouped_transactions,
+			) as payment_group_mock,
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.group_journal_entry_buchungsstapel",
+				return_value=journal_grouped_transactions,
+			) as journal_group_mock,
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.apply_buchungsstapel_mapping",
+				return_value=mapped_transactions,
+			) as map_mock,
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_names",
+				return_value=[],
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_customers",
+				return_value=[],
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_suppliers",
+				return_value=[],
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_datev_csv",
+				return_value="csv-data",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.zip_and_download",
+			) as zip_mock,
+		):
+			download_datev_csv(filters)
+
+		self.assertEqual(get_transactions_mock.call_args.args[0]["against_account"], "9999")
+		self.assertEqual(get_transactions_mock.call_args.args[0]["opening_account"], "9998")
+		sales_group_mock.assert_called_once_with(raw_transactions, get_transactions_mock.call_args.args[0])
+		payment_group_mock.assert_called_once_with(
+			sales_grouped_transactions, get_transactions_mock.call_args.args[0]
+		)
+		journal_group_mock.assert_called_once_with(
+			payment_grouped_transactions, get_transactions_mock.call_args.args[0]
+		)
+		map_mock.assert_called_once_with(
+			journal_grouped_transactions, get_transactions_mock.call_args.args[0]
+		)
+		self.assertTrue(zip_mock.called)
 
 	def test_groups_sales_invoice_rows_only_when_account_and_tax_match(self):
 		transactions = [
@@ -797,6 +916,327 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		)
 
 		self.assertEqual(grouped, transactions)
+
+	def test_groups_sales_journal_entry_into_single_line(self):
+		transactions = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 119,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "10001",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00003",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00003",
+				"Beleginfo - Art 3": "Customer",
+				"Beleginfo - Inhalt 3": "Test Customer",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 100,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "8400",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00003",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00003",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 19,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "3806",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00003",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00003",
+			},
+		]
+		journal_entry = frappe._dict(
+			{
+				"name": "ACC-JV-2026-00003",
+				"company": "_Test GmbH",
+				"accounts": [
+					frappe._dict(
+						{
+							"account": "Debtors - _TG",
+							"party_type": "Customer",
+							"party": "Test Customer",
+							"debit_in_account_currency": 119,
+							"credit_in_account_currency": 0,
+						}
+					),
+					frappe._dict(
+						{
+							"account": "Sales - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 100,
+							"custom_datev_account_no": "8400",
+						}
+					),
+					frappe._dict(
+						{
+							"account": "VAT 19 - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 19,
+						}
+					),
+				],
+			}
+		)
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=journal_entry,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_account_type",
+				side_effect=lambda account: {"Debtors - _TG": "Receivable"}.get(account, ""),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_bu_schluessel",
+				side_effect=lambda row: "19" if row.account == "VAT 19 - _TG" else "",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.is_journal_entry_tax_row",
+				side_effect=lambda row: row.account == "VAT 19 - _TG",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_party_account_number",
+				return_value="10001",
+			),
+		):
+			grouped = group_journal_entry_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9999"}
+			)
+
+		self.assertEqual(len(grouped), 1)
+		self.assertEqual(grouped[0]["Konto"], "8400")
+		self.assertEqual(grouped[0]["Gegenkonto (ohne BU-Schlüssel)"], "10001")
+		self.assertEqual(grouped[0]["BU-Schlüssel"], "19")
+		self.assertEqual(float(grouped[0]["Umsatz (ohne Soll/Haben-Kz)"]), 100.0)
+		self.assertEqual(grouped[0]["Soll/Haben-Kennzeichen"], "H")
+
+	def test_groups_purchase_journal_entry_into_single_line(self):
+		transactions = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 119,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "70001",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00004",
+				"Buchungstext": "Purchase Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00004",
+				"Beleginfo - Art 3": "Supplier",
+				"Beleginfo - Inhalt 3": "Test Supplier",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 100,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "3400",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00004",
+				"Buchungstext": "Purchase Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00004",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 19,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "1406",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00004",
+				"Buchungstext": "Purchase Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00004",
+			},
+		]
+		journal_entry = frappe._dict(
+			{
+				"name": "ACC-JV-2026-00004",
+				"company": "_Test GmbH",
+				"accounts": [
+					frappe._dict(
+						{
+							"account": "Creditors - _TG",
+							"party_type": "Supplier",
+							"party": "Test Supplier",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 119,
+						}
+					),
+					frappe._dict(
+						{
+							"account": "Expense - _TG",
+							"debit_in_account_currency": 100,
+							"credit_in_account_currency": 0,
+							"custom_datev_account_no": "3400",
+						}
+					),
+					frappe._dict(
+						{
+							"account": "Input VAT 19 - _TG",
+							"debit_in_account_currency": 19,
+							"credit_in_account_currency": 0,
+						}
+					),
+				],
+			}
+		)
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=journal_entry,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_account_type",
+				side_effect=lambda account: {"Creditors - _TG": "Payable"}.get(account, ""),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_bu_schluessel",
+				side_effect=lambda row: "19" if row.account == "Input VAT 19 - _TG" else "",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.is_journal_entry_tax_row",
+				side_effect=lambda row: row.account == "Input VAT 19 - _TG",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_party_account_number",
+				return_value="70001",
+			),
+		):
+			grouped = group_journal_entry_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9999"}
+			)
+
+		self.assertEqual(len(grouped), 1)
+		self.assertEqual(grouped[0]["Konto"], "3400")
+		self.assertEqual(grouped[0]["Gegenkonto (ohne BU-Schlüssel)"], "70001")
+		self.assertEqual(grouped[0]["BU-Schlüssel"], "19")
+		self.assertEqual(float(grouped[0]["Umsatz (ohne Soll/Haben-Kz)"]), 100.0)
+		self.assertEqual(grouped[0]["Soll/Haben-Kennzeichen"], "S")
+
+	def test_groups_journal_entry_when_tax_account_has_no_unique_bu_schluessel(self):
+		transactions = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 119,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "10001",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00005",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00005",
+				"Beleginfo - Art 3": "Customer",
+				"Beleginfo - Inhalt 3": "Test Customer",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 100,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "8400",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00005",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00005",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 19,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "3806",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00005",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00005",
+			},
+		]
+		journal_entry = frappe._dict(
+			{
+				"name": "ACC-JV-2026-00005",
+				"company": "_Test GmbH",
+				"accounts": [
+					frappe._dict(
+						{
+							"account": "Debtors - _TG",
+							"party_type": "Customer",
+							"party": "Test Customer",
+							"debit_in_account_currency": 119,
+							"credit_in_account_currency": 0,
+						}
+					),
+					frappe._dict(
+						{
+							"account": "Sales - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 100,
+							"custom_datev_account_no": "8400",
+						}
+					),
+					frappe._dict(
+						{
+							"account": "VAT 19 - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 19,
+						}
+					),
+				],
+			}
+		)
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=journal_entry,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_account_type",
+				side_effect=lambda account: {"Debtors - _TG": "Receivable"}.get(account, ""),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_bu_schluessel",
+				return_value="",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.is_journal_entry_tax_row",
+				side_effect=lambda row: row.account == "VAT 19 - _TG",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_party_account_number",
+				return_value="10001",
+			),
+		):
+			grouped = group_journal_entry_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9999"}
+			)
+
+		self.assertEqual(len(grouped), 1)
+		self.assertEqual(grouped[0]["Konto"], "8400")
+		self.assertEqual(grouped[0]["Gegenkonto (ohne BU-Schlüssel)"], "10001")
+		self.assertEqual(grouped[0]["BU-Schlüssel"], "")
+		self.assertEqual(float(grouped[0]["Umsatz (ohne Soll/Haben-Kz)"]), 100.0)
+		self.assertEqual(grouped[0]["Soll/Haben-Kennzeichen"], "H")
 
 	def test_preserves_grouped_sales_invoice_bu_schluessel_from_mapping_override(self):
 		transactions = [

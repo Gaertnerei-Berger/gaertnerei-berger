@@ -168,6 +168,7 @@ def execute(filters=None):
 		data = get_transactions(filters)
 		data = group_sales_invoice_buchungsstapel(data, filters)
 		data = group_payment_entry_buchungsstapel(data, filters)
+		data = group_journal_entry_buchungsstapel(data, filters)
 		data = apply_buchungsstapel_mapping(data, filters)
 		data = [[row.get(column.get("fieldname")) for column in COLUMNS] for row in data]
 
@@ -540,6 +541,312 @@ def get_payment_entry_party_or_account_number(voucher_doc, account_name, fallbac
 		)
 
 	return get_payment_entry_account_number(account_name, fallback_row)
+
+
+def group_journal_entry_buchungsstapel(transactions, filters):
+	"""
+	Collapse simple sales-like or purchase-like Journal Entries into one DATEV row.
+
+	The supported shape is intentionally narrow: one party row, one revenue/expense
+	row, and one tax row. Anything more complex stays as raw GL rows.
+	"""
+	if not transactions:
+		return transactions
+
+	grouped_transactions = []
+	journal_rows_by_voucher = {}
+
+	for row in transactions:
+		if row.get("Beleginfo - Art 1") == "Journal Entry" and row.get("Belegfeld 1"):
+			journal_rows_by_voucher.setdefault(row.get("Belegfeld 1"), []).append(row)
+			continue
+
+		grouped_transactions.append(row)
+
+	for voucher_no, voucher_rows in journal_rows_by_voucher.items():
+		grouped_transactions.extend(get_grouped_journal_entry_rows(voucher_no, voucher_rows, filters))
+
+	return sorted(grouped_transactions, key=lambda row: row.get("Belegdatum"))
+
+
+def get_grouped_journal_entry_rows(voucher_no, voucher_rows, filters):
+	if len(voucher_rows) != 3:
+		return voucher_rows
+
+	voucher_doc = load_voucher_doc("Journal Entry", voucher_no)
+	if not voucher_doc:
+		return voucher_rows
+
+	party_row, business_row, tax_row = get_qualifying_journal_entry_rows(voucher_doc)
+	if not party_row or not business_row or not tax_row:
+		return voucher_rows
+
+	bu_schluessel = get_journal_entry_bu_schluessel(tax_row)
+
+	base_row = get_journal_entry_base_row(voucher_rows, party_row)
+	konto = get_journal_entry_export_account_number(business_row)
+	gegenkonto = get_party_account_number(
+		party_type=party_row.get("party_type"),
+		party=party_row.get("party"),
+		company=voucher_doc.company,
+		primary_account=party_row.get("account"),
+		base_row=base_row,
+		filters=filters,
+	)
+	if not konto or not gegenkonto:
+		return voucher_rows
+
+	grouped_row = dict(base_row)
+	grouped_row["Umsatz (ohne Soll/Haben-Kz)"] = abs(get_journal_entry_row_amount(business_row))
+	grouped_row["Soll/Haben-Kennzeichen"] = (
+		"H" if get_journal_entry_credit_amount(business_row) > 0 else "S"
+	)
+	grouped_row["Konto"] = konto
+	grouped_row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
+	grouped_row["BU-Schlüssel"] = bu_schluessel
+	return [grouped_row]
+
+
+def get_qualifying_journal_entry_rows(voucher_doc):
+	account_rows = [row for row in (voucher_doc.get("accounts") or []) if has_journal_entry_amount(row)]
+	if len(account_rows) != 3:
+		return None, None, None
+
+	sales_party_rows = [
+		row
+		for row in account_rows
+		if is_sales_journal_entry_party_row(row)
+	]
+	if len(sales_party_rows) == 1:
+		return match_sales_journal_entry_rows(account_rows, sales_party_rows[0])
+
+	purchase_party_rows = [
+		row
+		for row in account_rows
+		if is_purchase_journal_entry_party_row(row)
+	]
+	if len(purchase_party_rows) == 1:
+		return match_purchase_journal_entry_rows(account_rows, purchase_party_rows[0])
+
+	return None, None, None
+
+
+def match_sales_journal_entry_rows(account_rows, party_row):
+	counter_rows = [row for row in account_rows if row is not party_row and get_journal_entry_credit_amount(row) > 0]
+	return match_journal_entry_counter_rows(party_row, counter_rows)
+
+
+def match_purchase_journal_entry_rows(account_rows, party_row):
+	counter_rows = [row for row in account_rows if row is not party_row and get_journal_entry_debit_amount(row) > 0]
+	return match_journal_entry_counter_rows(party_row, counter_rows)
+
+
+def match_journal_entry_counter_rows(party_row, counter_rows):
+	if len(counter_rows) != 2:
+		return None, None, None
+
+	tax_rows = [row for row in counter_rows if is_journal_entry_tax_row(row)]
+	if len(tax_rows) != 1:
+		return None, None, None
+
+	tax_row = tax_rows[0]
+	business_rows = [row for row in counter_rows if row is not tax_row]
+	if len(business_rows) != 1:
+		return None, None, None
+
+	return party_row, business_rows[0], tax_row
+
+
+def is_sales_journal_entry_party_row(row):
+	return (
+		get_journal_entry_account_type(row.get("account")) == "Receivable"
+		and row.get("party_type") == "Customer"
+		and bool(row.get("party"))
+		and get_journal_entry_debit_amount(row) > 0
+		and get_journal_entry_credit_amount(row) == 0
+	)
+
+
+def is_purchase_journal_entry_party_row(row):
+	return (
+		get_journal_entry_account_type(row.get("account")) == "Payable"
+		and row.get("party_type") == "Supplier"
+		and bool(row.get("party"))
+		and get_journal_entry_credit_amount(row) > 0
+		and get_journal_entry_debit_amount(row) == 0
+	)
+
+
+def has_journal_entry_amount(row):
+	return get_journal_entry_row_amount(row) > 0
+
+
+def get_journal_entry_row_amount(row):
+	return max(get_journal_entry_debit_amount(row), get_journal_entry_credit_amount(row))
+
+
+def get_journal_entry_debit_amount(row):
+	return Decimal(str(row.get("debit_in_account_currency") or row.get("debit") or 0))
+
+
+def get_journal_entry_credit_amount(row):
+	return Decimal(str(row.get("credit_in_account_currency") or row.get("credit") or 0))
+
+
+def get_journal_entry_account_type(account_name):
+	if not account_name:
+		return ""
+
+	return frappe.db.get_value("Account", account_name, "account_type") or ""
+
+
+def get_journal_entry_export_account_number(row):
+	if row.get("custom_datev_account_no"):
+		return row.get("custom_datev_account_no")
+
+	if not row.get("account"):
+		return ""
+
+	return frappe.db.get_value("Account", row.get("account"), "account_number") or ""
+
+
+def get_journal_entry_bu_schluessel(row):
+	if not row.get("account"):
+		return ""
+
+	bu_schluessel_by_account = get_item_tax_template_bu_schluessel_by_account()
+	matches = bu_schluessel_by_account.get(row.get("account")) or set()
+	if len(matches) != 1:
+		return ""
+
+	return next(iter(matches))
+
+
+def is_journal_entry_tax_row(row):
+	account_name = row.get("account")
+	if not account_name:
+		return False
+
+	return account_name in get_item_tax_template_accounts()
+
+
+def get_item_tax_template_accounts():
+	return set(build_item_tax_template_bu_schluessel_by_account(include_blank=True))
+
+
+def get_item_tax_template_bu_schluessel_by_account():
+	return build_item_tax_template_bu_schluessel_by_account(include_blank=False)
+
+
+def get_item_tax_template_bu_schluessel_by_tax_rate():
+	return build_item_tax_template_bu_schluessel_by_tax_rate(include_blank=False)
+
+
+def build_item_tax_template_bu_schluessel_by_account(include_blank=False):
+	template_rows = frappe.get_all(
+		"Item Tax Template",
+		fields=["name", "custom_bu_schlussel"],
+		limit_page_length=0,
+	)
+	if not template_rows:
+		return {}
+
+	template_meta = frappe.get_meta("Item Tax Template")
+	table_fields = [df for df in template_meta.fields if df.fieldtype == "Table" and df.options]
+	if not table_fields:
+		return {}
+
+	child_meta_cache = {}
+	bu_schluessel_by_account = {}
+
+	for template_row in template_rows:
+		template_doc = load_voucher_doc("Item Tax Template", template_row.name)
+		if not template_doc:
+			continue
+
+		for table_df in table_fields:
+			if table_df.options not in child_meta_cache:
+				child_meta_cache[table_df.options] = frappe.get_meta(table_df.options)
+			child_meta = child_meta_cache[table_df.options]
+			account_fields = [
+				df.fieldname
+				for df in child_meta.fields
+				if df.fieldtype == "Link" and df.options == "Account"
+			]
+			if not account_fields:
+				continue
+
+			for child_row in template_doc.get(table_df.fieldname) or []:
+				for account_field in account_fields:
+					account_name = child_row.get(account_field)
+					if not account_name:
+						continue
+
+					bu_schluessel = template_row.custom_bu_schlussel
+					if bu_schluessel in (None, "") and not include_blank:
+						continue
+
+					bu_schluessel_by_account.setdefault(account_name, set()).add(
+						"" if bu_schluessel in (None, "") else str(bu_schluessel)
+					)
+
+	return bu_schluessel_by_account
+
+
+def build_item_tax_template_bu_schluessel_by_tax_rate(include_blank=False):
+	template_rows = frappe.get_all(
+		"Item Tax Template",
+		fields=["name", "custom_bu_schlussel"],
+		limit_page_length=0,
+	)
+	if not template_rows:
+		return {}
+
+	template_meta = frappe.get_meta("Item Tax Template")
+	table_fields = [df for df in template_meta.fields if df.fieldtype == "Table" and df.options]
+	if not table_fields:
+		return {}
+
+	bu_schluessel_by_tax_rate = {}
+
+	for template_row in template_rows:
+		template_doc = load_voucher_doc("Item Tax Template", template_row.name)
+		if not template_doc:
+			continue
+
+		for table_df in table_fields:
+			for child_row in template_doc.get(table_df.fieldname) or []:
+				tax_rate = normalize_tax_rate_key(child_row.get("tax_rate"))
+				if not tax_rate:
+					continue
+
+				bu_schluessel = template_row.custom_bu_schlussel
+				if bu_schluessel in (None, "") and not include_blank:
+					continue
+
+				bu_schluessel_by_tax_rate.setdefault(tax_rate, set()).add(
+					"" if bu_schluessel in (None, "") else str(bu_schluessel)
+				)
+
+	return bu_schluessel_by_tax_rate
+
+
+def normalize_tax_rate_key(value):
+	if value in (None, ""):
+		return ""
+
+	return str(Decimal(str(value)).normalize())
+
+
+def get_journal_entry_base_row(voucher_rows, party_row):
+	for row in voucher_rows:
+		if (
+			row.get("Beleginfo - Art 3") == party_row.get("party_type")
+			and row.get("Beleginfo - Inhalt 3") == party_row.get("party")
+		):
+			return dict(row)
+
+	return dict(voucher_rows[0])
 
 
 def get_payment_entry_bu_schluessel(voucher_doc):
@@ -1170,6 +1477,7 @@ def download_datev_csv(filters):
 	transactions = get_transactions(filters)
 	transactions = group_sales_invoice_buchungsstapel(transactions, filters)
 	transactions = group_payment_entry_buchungsstapel(transactions, filters)
+	transactions = group_journal_entry_buchungsstapel(transactions, filters)
 	transactions = apply_buchungsstapel_mapping(transactions, filters)
 	account_names = get_account_names(filters)
 	customers = get_customers(filters)
