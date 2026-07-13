@@ -1238,6 +1238,302 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual(float(grouped[0]["Umsatz (ohne Soll/Haben-Kz)"]), 100.0)
 		self.assertEqual(grouped[0]["Soll/Haben-Kennzeichen"], "H")
 
+	def test_groups_multi_rate_sales_journal_entry_into_multiple_lines(self):
+		transactions = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 47104,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "10483",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00007",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00007",
+				"Beleginfo - Art 3": "Customer",
+				"Beleginfo - Inhalt 3": "K-10483",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 7103,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "3806",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00007",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00007",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 2617,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "3801",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00007",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00007",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 18692,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "4300",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00007",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00007",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 18692,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "4400",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00007",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00007",
+			},
+		]
+		journal_entry = frappe._dict(
+			{
+				"name": "ACC-JV-2026-00007",
+				"company": "_Test GmbH",
+				"accounts": [
+					frappe._dict(
+						{
+							"account": "10483 - Reha Plus - GB",
+							"party_type": "Customer",
+							"party": "K-10483",
+							"debit_in_account_currency": 47104,
+							"credit_in_account_currency": 0,
+							"custom_datev_account_no": "10483",
+						}
+					),
+					frappe._dict(
+						{
+							"account": "3806 - Umsatzsteuer 19 % - GB",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 7103,
+							"custom_datev_account_no": "3806",
+						}
+					),
+					frappe._dict(
+						{
+							"account": "3801 - Umsatzsteuer 7 % - GB",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 2617,
+							"custom_datev_account_no": "3801",
+						}
+					),
+					frappe._dict(
+						{
+							"account": "4300 - Erlöse 7 % USt - GB",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 18692,
+							"custom_datev_account_no": "4300",
+						}
+					),
+					frappe._dict(
+						{
+							"account": "4400 - Erlöse 19 % USt - GB",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 18692,
+							"custom_datev_account_no": "4400",
+						}
+					),
+				],
+			}
+		)
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=journal_entry,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_account_type",
+				side_effect=lambda account: {"10483 - Reha Plus - GB": "Receivable"}.get(account, ""),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_bu_schluessel",
+				side_effect=lambda row: {
+					"3806 - Umsatzsteuer 19 % - GB": "19",
+					"3801 - Umsatzsteuer 7 % - GB": "7",
+				}.get(row.account, ""),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.is_journal_entry_tax_row",
+				side_effect=lambda row: "Umsatzsteuer" in row.account,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_party_account_number",
+				return_value="10483",
+			),
+		):
+			grouped = group_journal_entry_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9999"}
+			)
+
+		self.assertEqual(len(grouped), 2)
+		self.assertEqual(
+			{
+				(
+					row["Konto"],
+					row["Gegenkonto (ohne BU-Schlüssel)"],
+					row["BU-Schlüssel"],
+					float(row["Umsatz (ohne Soll/Haben-Kz)"]),
+					row["Soll/Haben-Kennzeichen"],
+				)
+				for row in grouped
+			},
+			{
+				("4300", "10483", "7", 18692.0, "H"),
+				("4400", "10483", "19", 18692.0, "H"),
+			},
+		)
+
+	def test_preserves_multi_rate_journal_entry_when_tax_pairing_is_ambiguous(self):
+		transactions = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 238,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "10001",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00008",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00008",
+				"Beleginfo - Art 3": "Customer",
+				"Beleginfo - Inhalt 3": "Test Customer",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 19,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "3806",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00008",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00008",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 19,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "3801",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00008",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00008",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 100,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "8400",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00008",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00008",
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 100,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": "8300",
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-JV-2026-00008",
+				"Buchungstext": "Sales Journal Entry",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": "ACC-JV-2026-00008",
+			},
+		]
+		journal_entry = frappe._dict(
+			{
+				"name": "ACC-JV-2026-00008",
+				"company": "_Test GmbH",
+				"accounts": [
+					frappe._dict(
+						{
+							"account": "Debtors - _TG",
+							"party_type": "Customer",
+							"party": "Test Customer",
+							"debit_in_account_currency": 238,
+							"credit_in_account_currency": 0,
+						}
+					),
+					frappe._dict(
+						{
+							"account": "VAT 19 - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 19,
+						}
+					),
+					frappe._dict(
+						{
+							"account": "VAT 7 - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 19,
+						}
+					),
+					frappe._dict(
+						{
+							"account": "Sales Domestic - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 100,
+							"custom_datev_account_no": "8400",
+						}
+					),
+					frappe._dict(
+						{
+							"account": "Sales Export - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 100,
+							"custom_datev_account_no": "8300",
+						}
+					),
+				],
+			}
+		)
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=journal_entry,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_account_type",
+				side_effect=lambda account: {"Debtors - _TG": "Receivable"}.get(account, ""),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.is_journal_entry_tax_row",
+				side_effect=lambda row: row.account in {"VAT 19 - _TG", "VAT 7 - _TG"},
+			),
+		):
+			grouped = group_journal_entry_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9999"}
+			)
+
+		self.assertEqual(grouped, transactions)
+
 	def test_preserves_grouped_sales_invoice_bu_schluessel_from_mapping_override(self):
 		transactions = [
 			{

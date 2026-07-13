@@ -8,6 +8,7 @@ Provide a report and downloadable CSV according to the German DATEV format.
 """
 
 import json
+import re
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -23,6 +24,7 @@ from gaertnerei_berger.utils.datev_constants import (
 from gaertnerei_berger.utils.datev_csv import get_datev_csv, zip_and_download
 
 BUCHUNGSSTAPEL_REPORT = "EXTF_Buchungsstapel.csv"
+ACCOUNT_TAX_RATE_PATTERN = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
 
 COLUMNS = [
 	{
@@ -570,21 +572,15 @@ def group_journal_entry_buchungsstapel(transactions, filters):
 
 
 def get_grouped_journal_entry_rows(voucher_no, voucher_rows, filters):
-	if len(voucher_rows) != 3:
-		return voucher_rows
-
 	voucher_doc = load_voucher_doc("Journal Entry", voucher_no)
 	if not voucher_doc:
 		return voucher_rows
 
-	party_row, business_row, tax_row = get_qualifying_journal_entry_rows(voucher_doc)
-	if not party_row or not business_row or not tax_row:
+	party_row, grouped_row_inputs = get_qualifying_journal_entry_grouping(voucher_doc)
+	if not party_row or not grouped_row_inputs:
 		return voucher_rows
 
-	bu_schluessel = get_journal_entry_bu_schluessel(tax_row)
-
 	base_row = get_journal_entry_base_row(voucher_rows, party_row)
-	konto = get_journal_entry_export_account_number(business_row)
 	gegenkonto = get_party_account_number(
 		party_type=party_row.get("party_type"),
 		party=party_row.get("party"),
@@ -593,24 +589,32 @@ def get_grouped_journal_entry_rows(voucher_no, voucher_rows, filters):
 		base_row=base_row,
 		filters=filters,
 	)
-	if not konto or not gegenkonto:
+	if not gegenkonto:
 		return voucher_rows
 
-	grouped_row = dict(base_row)
-	grouped_row["Umsatz (ohne Soll/Haben-Kz)"] = abs(get_journal_entry_row_amount(business_row))
-	grouped_row["Soll/Haben-Kennzeichen"] = (
-		"H" if get_journal_entry_credit_amount(business_row) > 0 else "S"
-	)
-	grouped_row["Konto"] = konto
-	grouped_row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
-	grouped_row["BU-Schlüssel"] = bu_schluessel
-	return [grouped_row]
+	grouped_rows = []
+	for business_row, tax_row in grouped_row_inputs:
+		konto = get_journal_entry_export_account_number(business_row)
+		if not konto:
+			return voucher_rows
+
+		grouped_row = dict(base_row)
+		grouped_row["Umsatz (ohne Soll/Haben-Kz)"] = abs(get_journal_entry_row_amount(business_row))
+		grouped_row["Soll/Haben-Kennzeichen"] = (
+			"H" if get_journal_entry_credit_amount(business_row) > 0 else "S"
+		)
+		grouped_row["Konto"] = konto
+		grouped_row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
+		grouped_row["BU-Schlüssel"] = get_journal_entry_bu_schluessel(tax_row)
+		grouped_rows.append(grouped_row)
+
+	return grouped_rows
 
 
-def get_qualifying_journal_entry_rows(voucher_doc):
+def get_qualifying_journal_entry_grouping(voucher_doc):
 	account_rows = [row for row in (voucher_doc.get("accounts") or []) if has_journal_entry_amount(row)]
-	if len(account_rows) != 3:
-		return None, None, None
+	if len(account_rows) < 3:
+		return None, None
 
 	sales_party_rows = [
 		row
@@ -618,7 +622,7 @@ def get_qualifying_journal_entry_rows(voucher_doc):
 		if is_sales_journal_entry_party_row(row)
 	]
 	if len(sales_party_rows) == 1:
-		return match_sales_journal_entry_rows(account_rows, sales_party_rows[0])
+		return sales_party_rows[0], match_sales_journal_entry_rows(account_rows, sales_party_rows[0])
 
 	purchase_party_rows = [
 		row
@@ -626,35 +630,65 @@ def get_qualifying_journal_entry_rows(voucher_doc):
 		if is_purchase_journal_entry_party_row(row)
 	]
 	if len(purchase_party_rows) == 1:
-		return match_purchase_journal_entry_rows(account_rows, purchase_party_rows[0])
+		return purchase_party_rows[0], match_purchase_journal_entry_rows(
+			account_rows, purchase_party_rows[0]
+		)
 
-	return None, None, None
+	return None, None
 
 
 def match_sales_journal_entry_rows(account_rows, party_row):
 	counter_rows = [row for row in account_rows if row is not party_row and get_journal_entry_credit_amount(row) > 0]
-	return match_journal_entry_counter_rows(party_row, counter_rows)
+	return match_journal_entry_counter_rows(counter_rows)
 
 
 def match_purchase_journal_entry_rows(account_rows, party_row):
 	counter_rows = [row for row in account_rows if row is not party_row and get_journal_entry_debit_amount(row) > 0]
-	return match_journal_entry_counter_rows(party_row, counter_rows)
+	return match_journal_entry_counter_rows(counter_rows)
 
 
-def match_journal_entry_counter_rows(party_row, counter_rows):
-	if len(counter_rows) != 2:
-		return None, None, None
-
+def match_journal_entry_counter_rows(counter_rows):
 	tax_rows = [row for row in counter_rows if is_journal_entry_tax_row(row)]
-	if len(tax_rows) != 1:
-		return None, None, None
+	business_rows = [row for row in counter_rows if row not in tax_rows]
+	if not business_rows or len(business_rows) != len(tax_rows):
+		return []
 
-	tax_row = tax_rows[0]
-	business_rows = [row for row in counter_rows if row is not tax_row]
-	if len(business_rows) != 1:
-		return None, None, None
+	if len(business_rows) == 1:
+		return [(business_rows[0], tax_rows[0])] if len(tax_rows) == 1 else []
 
-	return party_row, business_rows[0], tax_row
+	return match_multi_row_journal_entry_counter_rows(business_rows, tax_rows)
+
+
+def match_multi_row_journal_entry_counter_rows(business_rows, tax_rows):
+	tax_rows_by_rate = {}
+	for tax_row in tax_rows:
+		tax_rate = get_journal_entry_account_tax_rate(tax_row)
+		if not tax_rate or tax_rate in tax_rows_by_rate:
+			return []
+
+		tax_rows_by_rate[tax_rate] = tax_row
+
+	grouped_row_inputs = []
+	seen_tax_rates = set()
+
+	for business_row in business_rows:
+		tax_rate = get_journal_entry_account_tax_rate(business_row)
+		if not tax_rate or tax_rate in seen_tax_rates or tax_rate not in tax_rows_by_rate:
+			return []
+
+		seen_tax_rates.add(tax_rate)
+		grouped_row_inputs.append((business_row, tax_rows_by_rate[tax_rate]))
+
+	return grouped_row_inputs
+
+
+def get_journal_entry_account_tax_rate(row):
+	account_name = row.get("account") or ""
+	match = ACCOUNT_TAX_RATE_PATTERN.search(account_name)
+	if not match:
+		return ""
+
+	return normalize_tax_rate_key(match.group(1).replace(",", "."))
 
 
 def is_sales_journal_entry_party_row(row):
