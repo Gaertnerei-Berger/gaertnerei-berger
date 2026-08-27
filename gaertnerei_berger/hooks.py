@@ -25,6 +25,7 @@ fixtures = [
 					"Payment Entry-custom_datev_section",
 					"Payment Entry-custom_datev_account_no",
 					"Payment Entry-custom_datev_against_account_no",
+					"Payment Entry-custom_bu_schlussel",
 					"Payment Entry-custom_datev_end_section",
 					"Purchase Invoice-custom_datev_section",
 					"Purchase Invoice-custom_datev_account_no",
@@ -136,6 +137,9 @@ fixtures = [
 doc_events = {
 	"*": {
 		"on_submit": "gaertnerei_berger.gb_datev.doctype.datev_unternehmen_online_settings.datev_unternehmen_online_settings.send",
+	},
+	"Payment Entry": {
+		"validate": "gaertnerei_berger.gb_datev.payment_entry.set_datev_fields",
 	},
 }
 

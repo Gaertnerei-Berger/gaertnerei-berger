@@ -1807,7 +1807,7 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 
 
 class TestDatevPaymentEntryGrouping(TestCase):
-	def test_groups_receive_payment_entry_into_single_line_with_invoice_bu_schluessel(self):
+	def test_groups_receive_payment_entry_into_single_line_with_blank_bu_schluessel(self):
 		transactions = [
 			{
 				"Umsatz (ohne Soll/Haben-Kz)": 119.0,
@@ -1875,10 +1875,10 @@ class TestDatevPaymentEntryGrouping(TestCase):
 		self.assertEqual(len(grouped), 1)
 		self.assertEqual(grouped[0]["Konto"], "1001")
 		self.assertEqual(grouped[0]["Gegenkonto (ohne BU-Schlüssel)"], "1800")
-		self.assertEqual(grouped[0]["BU-Schlüssel"], "19")
+		self.assertEqual(grouped[0]["BU-Schlüssel"], "")
 		self.assertEqual(grouped[0]["Soll/Haben-Kennzeichen"], "H")
 
-	def test_groups_pay_payment_entry_into_single_line_with_invoice_bu_schluessel(self):
+	def test_groups_pay_payment_entry_into_single_line_with_blank_bu_schluessel(self):
 		transactions = [
 			{
 				"Umsatz (ohne Soll/Haben-Kz)": 59.5,
@@ -1944,7 +1944,7 @@ class TestDatevPaymentEntryGrouping(TestCase):
 		self.assertEqual(len(grouped), 1)
 		self.assertEqual(grouped[0]["Konto"], "3001")
 		self.assertEqual(grouped[0]["Gegenkonto (ohne BU-Schlüssel)"], "1800")
-		self.assertEqual(grouped[0]["BU-Schlüssel"], "9")
+		self.assertEqual(grouped[0]["BU-Schlüssel"], "")
 		self.assertEqual(grouped[0]["Soll/Haben-Kennzeichen"], "S")
 
 	def test_mapping_paid_to_account_outputs_short_account_number(self):

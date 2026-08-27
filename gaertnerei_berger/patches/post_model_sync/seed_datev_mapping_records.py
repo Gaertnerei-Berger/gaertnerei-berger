@@ -42,6 +42,13 @@ def get_default_mappings():
 			{"map_to_field": "due_date", "map_to_column": "Fälligkeit"},
 		],
 		"Payment Entry": [
+			{"map_to_field": "paid_amount", "map_to_column": "Umsatz (ohne Soll/Haben-Kz)"},
+			{"map_to_field": "custom_datev_account_no", "map_to_column": "Konto"},
+			{
+				"map_to_field": "custom_datev_against_account_no",
+				"map_to_column": "Gegenkonto (ohne BU-Schlüssel)",
+			},
+			{"map_to_field": "custom_bu_schlussel", "map_to_column": "BU-Schlüssel"},
 			{"map_to_field": "reference_no", "map_to_column": "Beleginfo - Inhalt 5"},
 			{"map_to_field": "reference_date", "map_to_column": "Beleginfo - Inhalt 6"},
 		],
