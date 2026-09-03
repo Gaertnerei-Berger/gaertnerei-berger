@@ -2,6 +2,19 @@
 
 Use this when setting up or reviewing **Customer**, **Supplier**, and **Address** records.
 
+The app does **not** create Tax Categories on install. Create them manually in Desk before assigning them to parties or Item tax rows.
+
+## Initial Tax Categories
+
+Create at least:
+
+| Title | Used for |
+|-------|----------|
+| `Inland Ust` | Customers / sales (USt) |
+| `Inland Vst` | Suppliers / purchase (VSt) |
+
+Add further categories (e.g. `EU Ust`, `EU Vst`) when needed.
+
 ## Direction rules
 
 | Record | Allowed Tax Categories | Example |

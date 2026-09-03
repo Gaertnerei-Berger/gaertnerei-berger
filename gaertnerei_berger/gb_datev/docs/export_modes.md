@@ -1,8 +1,15 @@
-# DATEV Buchungsstapel Export Modes
+# DATEV Buchungsstapel Export
 
-Configure export behaviour in **DATEV Settings** under **Buchungsstapel Export**.
+Export always uses **Consultant Booking**. Configure Amount Basis, temporary against account (9090), and Payment BU keys in **DATEV Settings**. Umsatz decimals are always **`,`**.
 
-Production mode is **Consultant Booking** only (Settings UI). Umsatz decimals are always **`,`**.
+The app does **not** seed DATEV Mapping records on install. Create them manually in Desk (one or more docs per voucher type × party account type). Recommended field→column recipes:
+
+| Mapping name | Typical map_to_field → column |
+|--------------|-------------------------------|
+| Sales Invoice - Both | `due_date` → Fälligkeit |
+| Purchase Invoice - Both | `bill_no` → Beleginfo - Inhalt 5; `bill_date` → Beleginfo - Inhalt 6; `due_date` → Fälligkeit |
+| Payment Entry - Receivable / Payable | `paid_amount` → Umsatz; `custom_datev_account_no` → Konto; `custom_datev_against_account_no` → Gegenkonto; `custom_bu_schlussel` → BU-Schlüssel; `reference_no` / `reference_date` → Beleginfo 5/6 |
+| Journal Entry - Receivable / Payable | `accounts.custom_datev_account_no` → Konto; `custom_datev_account_no` → Gegenkonto; `accounts.custom_bu_schlussel` → BU-Schlüssel |
 
 See also [accepted_export_contract.md](accepted_export_contract.md) for the frozen orientation matrix.
 
@@ -35,7 +42,7 @@ For **Payment Entry** and **Journal Entry**, Mapping owns **Konto / Gegenkonto /
 
 The export includes only **submitted** vouchers (`docstatus = 1`). Draft and cancelled documents are excluded: cancelled GL entries (`is_cancelled = 1`) are filtered out; Sales/Purchase Invoice, Payment Entry, and Journal Entry queries require a submitted parent.
 
-## Consultant Booking (`consultant_booking`)
+## Consultant Booking
 
 Default for Berger. Matches live exports such as `RG-260020`.
 

@@ -12,4 +12,5 @@ gaertnerei_berger.patches.post_model_sync.fix_journal_entry_datev_konto_mapping
 gaertnerei_berger.patches.post_model_sync.migrate_datev_mapping_party_account_type
 gaertnerei_berger.patches.post_model_sync.apply_grill_datev_contract
 gaertnerei_berger.patches.post_model_sync.fix_invoice_mapping_both
+gaertnerei_berger.patches.post_model_sync.drop_buchungsstapel_export_mode
 execute:frappe.db.delete("Custom Role", {"report": "DATEV"})

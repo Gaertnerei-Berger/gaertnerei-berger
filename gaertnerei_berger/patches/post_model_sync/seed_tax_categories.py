@@ -1,14 +1,6 @@
-import frappe
-
-TAX_CATEGORIES = (
-	"Inland Ust",
-	"Inland Vst",
-)
+# Tax Categories are configured manually in Desk (not seeded by the app).
+# Kept as a no-op so already-recorded patch entries remain valid.
 
 
 def execute():
-	for title in TAX_CATEGORIES:
-		if frappe.db.exists("Tax Category", title):
-			continue
-
-		frappe.get_doc({"doctype": "Tax Category", "title": title}).insert(ignore_permissions=True)
+	pass

@@ -5,14 +5,13 @@
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
-  "field_order": [
+ "field_order": [
   "client",
   "client_number",
   "column_break_2",
   "consultant_number",
   "consultant",
   "section_break_export_mode",
-  "buchungsstapel_export_mode",
   "invoice_amount_basis",
   "section_break_4",
   "account_number_length",
@@ -67,17 +66,7 @@
    "label": "Buchungsstapel Export"
   },
   {
-   "default": "consultant_booking",
-   "description": "Consultant Booking groups SI/PI/PE/JE with Personenkonten and BU-Schl\u00fcssel. Raw GL (9090) fallthrough is used only when a voucher cannot be grouped.",
-   "fieldname": "buchungsstapel_export_mode",
-   "fieldtype": "Select",
-   "label": "Export Mode",
-   "options": "consultant_booking",
-   "reqd": 1
-  },
-  {
    "default": "net",
-   "depends_on": "eval:doc.buchungsstapel_export_mode=='consultant_booking'",
    "description": "Whether grouped Sales/Purchase Invoice and Journal Entry (with Item Tax Template) Umsatz uses net or gross amounts. Match your Steuerberater BU-Schl\u00fcssel configuration. Per-company setting.",
    "fieldname": "invoice_amount_basis",
    "fieldtype": "Select",
@@ -141,7 +130,7 @@
  ],
  "grid_page_length": 50,
  "links": [],
- "modified": "2026-09-02 18:00:00.000000",
+ "modified": "2026-09-03 15:00:00.000000",
  "modified_by": "Administrator",
  "module": "GB DATEV",
  "name": "DATEV Settings",

@@ -25,11 +25,7 @@ class DATEVSettings(Document):
 				_("Opening Against Account Number must be {0} digits long").format(self.account_number_length)
 			)
 
-		if self.buchungsstapel_export_mode not in {"consultant_booking", "gl_mirror"}:
-			# gl_mirror remains valid in code/tests but is hidden from Settings UI (#9=C)
-			throw(_("Export Mode must be Consultant Booking."))
-
-		if self.buchungsstapel_export_mode == "consultant_booking" and self.invoice_amount_basis not in {
+		if self.invoice_amount_basis not in {
 			"net",
 			"gross",
 			None,

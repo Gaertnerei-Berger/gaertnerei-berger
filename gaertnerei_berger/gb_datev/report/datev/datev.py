@@ -28,23 +28,12 @@ BUCHUNGSSTAPEL_REPORT = "EXTF_Buchungsstapel.csv"
 ACCOUNT_TAX_RATE_PATTERN = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
 
 EXPORT_MODE_CONSULTANT = "consultant_booking"
-EXPORT_MODE_GL_MIRROR = "gl_mirror"
 
 AMOUNT_BASIS_NET = "net"
 AMOUNT_BASIS_GROSS = "gross"
 
 UMSATZ_DECIMAL_COMMA = ","
 UMSATZ_DECIMAL_DOT = "."
-
-GL_MIRROR_EXCLUDED_MAP_COLUMNS = frozenset(
-	{
-		"Umsatz (ohne Soll/Haben-Kz)",
-		"Soll/Haben-Kennzeichen",
-		"Konto",
-		"Gegenkonto (ohne BU-Schlüssel)",
-		"BU-Schlüssel",
-	}
-)
 
 COLUMNS = [
 	{
@@ -194,16 +183,12 @@ def get_datev_export_filter_values(company):
 	opening_account = (
 		settings.opening_against_account_number or settings.temporary_against_account_number
 	)
-	export_mode = settings.get("buchungsstapel_export_mode") or EXPORT_MODE_CONSULTANT
-	# gl_mirror kept for internal/tests; Settings UI only offers consultant_booking
 	amount_basis = settings.get("invoice_amount_basis") or AMOUNT_BASIS_NET
-	if export_mode == EXPORT_MODE_GL_MIRROR:
-		amount_basis = AMOUNT_BASIS_NET
 
 	return {
 		"against_account": against_account,
 		"opening_account": opening_account or against_account,
-		"buchungsstapel_export_mode": export_mode,
+		"buchungsstapel_export_mode": EXPORT_MODE_CONSULTANT,
 		"invoice_amount_basis": amount_basis,
 		"umsatz_decimal_separator": UMSATZ_DECIMAL_COMMA,
 	}
@@ -224,16 +209,9 @@ def ensure_datev_query_filter_defaults(filters):
 	return filters
 
 
-def is_gl_mirror_export(filters):
-	return filters.get("buchungsstapel_export_mode") == EXPORT_MODE_GL_MIRROR
-
-
 def prepare_buchungsstapel_transactions(filters):
 	ensure_datev_query_filter_defaults(filters)
 	transactions = get_transactions(filters)
-	if is_gl_mirror_export(filters):
-		return apply_buchungsstapel_mapping(transactions, filters)
-
 	transactions = group_sales_invoice_buchungsstapel(transactions, filters)
 	transactions = group_payment_entry_buchungsstapel(transactions, filters)
 	transactions = group_journal_entry_buchungsstapel(transactions, filters)
@@ -379,7 +357,7 @@ def create_datev_export(company, from_date, to_date, voucher_type=None, remarks=
 			"to_date": to_date,
 			"remarks": remarks,
 			"voucher_type": voucher_type or "",
-			"export_mode": settings.get("buchungsstapel_export_mode"),
+			"export_mode": EXPORT_MODE_CONSULTANT,
 			"invoice_amount_basis": settings.get("invoice_amount_basis"),
 			"status": "Generated",
 		}
@@ -1548,9 +1526,6 @@ def apply_buchungsstapel_mapping(transactions, filters):
 
 		for mapping in field_mappings:
 			if not mapping.get("map_to_column") or not mapping.get("map_to_field"):
-				continue
-
-			if is_gl_mirror_export(filters) and mapping.get("map_to_column") in GL_MIRROR_EXCLUDED_MAP_COLUMNS:
 				continue
 
 			if should_preserve_existing_mapped_value(
