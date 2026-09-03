@@ -1,11 +1,12 @@
 {
  "actions": [],
- "autoname": "field:voucher_type",
+ "autoname": "format:{voucher_type} - {party_account_type}",
  "creation": "2026-04-28 16:20:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "voucher_type",
+  "party_account_type",
   "mapping_fields"
  ],
  "fields": [
@@ -13,10 +14,21 @@
    "fieldname": "voucher_type",
    "fieldtype": "Select",
    "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Voucher Type",
    "options": "\nSales Invoice\nPurchase Invoice\nPayment Entry\nExpense Claim\nPayroll Entry\nBank Reconciliation\nAsset\nStock Entry\nJournal Entry",
-   "reqd": 1,
-   "unique": 1
+   "reqd": 1
+  },
+  {
+   "default": "Both",
+   "description": "Receivable = Customer / Receive side. Payable = Supplier / Pay side. Both = direction-agnostic (typical for Sales/Purchase Invoice).",
+   "fieldname": "party_account_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Party Account Type",
+   "options": "Receivable\nPayable\nBoth",
+   "reqd": 1
   },
   {
    "fieldname": "mapping_fields",
@@ -26,11 +38,11 @@
   }
  ],
  "links": [],
- "modified": "2026-04-28 16:20:00.000000",
+ "modified": "2026-09-02 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "GB DATEV",
  "name": "DATEV Mapping",
- "naming_rule": "By fieldname",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {
@@ -71,5 +83,6 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
+ "title_field": "voucher_type",
  "track_changes": 1
 }

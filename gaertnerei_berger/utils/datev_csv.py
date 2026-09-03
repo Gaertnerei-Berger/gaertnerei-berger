@@ -44,8 +44,8 @@ def get_datev_csv(data, filters, csv_class):
 	data = result.to_csv(
 		# Reason for str(';'): https://github.com/pandas-dev/pandas/issues/6035
 		sep=";",
-		# European decimal seperator
-		decimal=",",
+		# Decimal separator for Umsatz and other numeric columns (DATEV Settings)
+		decimal=filters.get("umsatz_decimal_separator") or ",",
 		# Windows "ANSI" encoding
 		encoding="latin_1",
 		# format date as DDMM
@@ -56,7 +56,7 @@ def get_datev_csv(data, filters, csv_class):
 		index=False,
 		# Use all columns defined above
 		columns=csv_class.COLUMNS,
-		# Quote most fields, even currency values with "," separator
+		# Quote most fields, even currency values with decimal separator
 		quoting=QUOTE_NONNUMERIC,
 	)
 
@@ -171,6 +171,12 @@ def zip_and_download(zip_filename, csv_files):
 	zip_filename	Name of the zip file
 	csv_files		list of dicts [{'file_name': 'my_file.csv', 'csv_data': 'comma,separated,values'}]
 	"""
+	frappe.response["filecontent"] = build_datev_zip_bytes(csv_files)
+	frappe.response["filename"] = zip_filename
+	frappe.response["type"] = "binary"
+
+
+def build_datev_zip_bytes(csv_files):
 	zip_buffer = BytesIO()
 
 	zip_file = zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED)
@@ -178,7 +184,4 @@ def zip_and_download(zip_filename, csv_files):
 		zip_file.writestr(csv_file.get("file_name"), csv_file.get("csv_data"))
 
 	zip_file.close()
-
-	frappe.response["filecontent"] = zip_buffer.getvalue()
-	frappe.response["filename"] = zip_filename
-	frappe.response["type"] = "binary"
+	return zip_buffer.getvalue()
