@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from frappe import _
 from frappe.model.document import Document
 
 VOUCHER_TYPE_OPTIONS = [
@@ -14,6 +15,16 @@ VOUCHER_TYPE_OPTIONS = [
 	"Asset",
 	"Stock Entry",
 	"Journal Entry",
+]
+
+PARTY_ACCOUNT_TYPE_RECEIVABLE = "Receivable"
+PARTY_ACCOUNT_TYPE_PAYABLE = "Payable"
+PARTY_ACCOUNT_TYPE_BOTH = "Both"
+
+PARTY_ACCOUNT_TYPE_OPTIONS = [
+	PARTY_ACCOUNT_TYPE_RECEIVABLE,
+	PARTY_ACCOUNT_TYPE_PAYABLE,
+	PARTY_ACCOUNT_TYPE_BOTH,
 ]
 
 DATEV_REPORT_TYPES = [
@@ -40,7 +51,25 @@ NON_VALUE_FIELD_TYPES = {
 
 
 class DATEVMapping(Document):
-	pass
+	def validate(self):
+		self.party_account_type = self.party_account_type or PARTY_ACCOUNT_TYPE_BOTH
+		self._validate_unique_voucher_direction()
+
+	def _validate_unique_voucher_direction(self):
+		existing = frappe.db.exists(
+			"DATEV Mapping",
+			{
+				"voucher_type": self.voucher_type,
+				"party_account_type": self.party_account_type,
+				"name": ["!=", self.name],
+			},
+		)
+		if existing:
+			frappe.throw(
+				_(
+					"DATEV Mapping for {0} with Party Account Type {1} already exists ({2})."
+				).format(self.voucher_type, self.party_account_type, existing)
+			)
 
 
 @frappe.whitelist()

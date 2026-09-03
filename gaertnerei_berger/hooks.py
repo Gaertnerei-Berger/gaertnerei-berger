@@ -20,11 +20,18 @@ fixtures = [
 					"Item Tax Template-custom_bu_schlussel",
 					"Journal Entry Account-custom_datev_section",
 					"Journal Entry Account-custom_datev_account_no",
+					"Journal Entry Account-custom_item_tax_template",
+					"Journal Entry Account-custom_bu_schlussel",
+					"Journal Entry Account-custom_datev_auto_tax",
 					"Journal Entry Account-custom_datev_code",
+					"Journal Entry-custom_datev_section",
+					"Journal Entry-custom_datev_account_no",
+					"Journal Entry-custom_datev_end_section",
 					"Party Account-debtor_creditor_number",
 					"Payment Entry-custom_datev_section",
 					"Payment Entry-custom_datev_account_no",
 					"Payment Entry-custom_datev_against_account_no",
+					"Payment Entry-custom_bu_schlussel",
 					"Payment Entry-custom_datev_end_section",
 					"Purchase Invoice-custom_datev_section",
 					"Purchase Invoice-custom_datev_account_no",
@@ -68,7 +75,7 @@ fixtures = [
 # page_js = {"page" : "public/js/file.js"}
 
 # include js in doctype views
-# doctype_js = {"doctype" : "public/js/doctype.js"}
+doctype_js = {"Journal Entry": "public/js/journal_entry.js"}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
@@ -136,6 +143,12 @@ fixtures = [
 doc_events = {
 	"*": {
 		"on_submit": "gaertnerei_berger.gb_datev.doctype.datev_unternehmen_online_settings.datev_unternehmen_online_settings.send",
+	},
+	"Payment Entry": {
+		"validate": "gaertnerei_berger.gb_datev.payment_entry.set_datev_fields",
+	},
+	"Journal Entry": {
+		"validate": "gaertnerei_berger.gb_datev.journal_entry.validate_datev_fields",
 	},
 }
 
