@@ -4,8 +4,9 @@ BUCHUNGSSTAPEL_REPORT = "EXTF_Buchungsstapel.csv"
 
 
 def execute():
-	for (voucher_type, party_account_type), mappings in get_default_mappings().items():
-		upsert_mapping(voucher_type, mappings, party_account_type=party_account_type)
+	# DATEV Mappings are configured manually in Desk (not seeded by the app).
+	# Helpers below remain for migrate/apply_grill imports and docs recipes.
+	pass
 
 
 def mapping_name(voucher_type, party_account_type="Both"):

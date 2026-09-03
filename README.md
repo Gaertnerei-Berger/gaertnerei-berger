@@ -17,6 +17,12 @@ bench --site <site> install-app gaertnerei_berger
 bench --site <site> migrate
 ```
 
+After install, configure in Desk (nothing is seeded automatically):
+
+1. **DATEV Settings** — client/consultant numbers, temporary against account (9090), Amount Basis, Receive/Pay BU.
+2. **DATEV Mapping** — field→column maps per voucher type × party account type (see [export_modes.md](gaertnerei_berger/gb_datev/docs/export_modes.md)).
+3. **Tax Categories** — e.g. `Inland Ust` / `Inland Vst` (see [tax_category_training.md](gaertnerei_berger/gb_datev/docs/tax_category_training.md)).
+
 ## What you get
 
 | Piece | Role |
