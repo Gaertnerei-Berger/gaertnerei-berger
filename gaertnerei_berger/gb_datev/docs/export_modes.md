@@ -14,7 +14,7 @@ DATEV Mapping is keyed by **Voucher Type** + **Party Account Type**:
 |--------------------|-------------|
 | **Receivable** | Payment Entry **Receive**, sales-like Journal Entry |
 | **Payable** | Payment Entry **Pay**, purchase-like Journal Entry |
-| **Both** | Direction-agnostic rows (SI/PI metadata, or fallback) |
+| **Both** | Direction-agnostic rows (SI/PI metadata, party-less Journal Entry transfers, or fallback) |
 
 Export picks the mapping for the voucher’s resolved type, then falls back to **Both**.
 
@@ -32,6 +32,7 @@ For **Payment Entry** and **Journal Entry**, Mapping owns **Konto / Gegenkonto /
 | PE Pay | Personenkonto | Bank | S |
 | JE sales | Erlöskonto | Debitor | H |
 | JE purchase | Aufwand | Kreditor | S |
+| JE transfer (no party) | Soll-Konto | Haben-Konto | S |
 
 ## Voucher status
 
@@ -43,13 +44,13 @@ Default for Berger. Matches live exports such as `RG-260020`.
 
 - Groups Sales/Purchase Invoice lines by Erlöskonto + tax/BU key
 - Adds settlement rows for **Is Paid** payments and write-offs on Purchase Invoice (BU = Settings pay BU for the payment, blank for write-off)
-- Groups simple Payment Entry (exactly 2 GL rows) and qualifying Journal Entry patterns
+- Groups simple Payment Entry (exactly 2 GL rows) and qualifying Journal Entry patterns, including party-less two-row transfers between balance-sheet accounts (Bank an Kasse)
 - **Konto / Gegenkonto** for PE/JE from DATEV Mapping; SI/PI from grouping (+ metadata Mapping)
 - Temporary against account (**9090**) is **not** used on successfully grouped rows
 
 ### Fallthrough (raw GL + 9090)
 
-Accepted for v1 when a voucher cannot be grouped (e.g. PE with ≠2 GL rows, non-party JE). Those rows keep temporary Gegenkonto and usually blank BU — document for Steuerberater review; export is not blocked.
+Accepted for v1 when a voucher cannot be grouped (e.g. PE with ≠2 GL rows, a party-less JE with more than two rows, a tax row, or an Income/Expense account). Those rows keep temporary Gegenkonto and usually blank BU — document for Steuerberater review; export is not blocked. The Journal Entry form shows an orange DATEV headline for party-less entries that will fall through. An empty mapped header field never overwrites Konto or Gegenkonto, so fallthrough rows keep 9090.
 
 ### Amount Basis
 
