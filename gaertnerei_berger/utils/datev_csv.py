@@ -1,6 +1,7 @@
 import datetime
 import zipfile
 from csv import QUOTE_NONNUMERIC
+from decimal import ROUND_HALF_UP, Decimal
 from io import BytesIO
 
 import frappe
@@ -8,6 +9,30 @@ import pandas as pd
 from frappe import _
 
 from .datev_constants import DataCategory
+
+UMSATZ_COLUMN = "Umsatz (ohne Soll/Haben-Kz)"
+
+
+class DatevAmount(Decimal):
+	"""Amount that renders with two decimals and a DATEV decimal separator.
+
+	It stays a number, so QUOTE_NONNUMERIC leaves it unquoted like DATEV expects.
+	"""
+
+	separator = ","
+
+	def __str__(self):
+		return f"{self:.2f}".replace(".", self.separator)
+
+
+def format_datev_amount(value, separator=","):
+	"""Return Umsatz as DatevAmount (e.g. 100,00) for Decimal, float, int or str input."""
+	if value is None or (isinstance(value, str) and not value.strip()) or pd.isna(value):
+		return value
+
+	amount = DatevAmount(Decimal(str(value).strip()).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+	amount.separator = separator
+	return amount
 
 
 def get_datev_csv(data, filters, csv_class):
@@ -37,6 +62,12 @@ def get_datev_csv(data, filters, csv_class):
 		result["Fälligkeit"] = result["Fälligkeit"].dt.strftime("%d%m%Y")
 
 		result = result.sort_values(by="Belegdatum", kind="stable", ignore_index=True)
+
+		# pandas applies `decimal` to float columns only; grouped rows carry Decimal or str.
+		separator = filters.get("umsatz_decimal_separator") or ","
+		result[UMSATZ_COLUMN] = (
+			result[UMSATZ_COLUMN].map(lambda value: format_datev_amount(value, separator)).astype(object)
+		)
 
 	if csv_class.DATA_CATEGORY == DataCategory.ACCOUNT_NAMES:
 		result["Sprach-ID"] = "de-DE"
