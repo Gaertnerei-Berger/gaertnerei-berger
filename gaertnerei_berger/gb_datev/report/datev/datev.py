@@ -717,8 +717,8 @@ def get_invoice_settlement_rows(voucher_type, voucher_doc, base_row, party_konto
 	Orientation follows Payment Entry Pay: Kreditor on Konto, Kasse/Bank on
 	Gegenkonto, S. Negative amounts (paid returns) flip to H.
 
-	A user DATEV Mapping on Konto/Gegenkonto for Purchase Invoice would also
-	overwrite these rows; the seeded mapping only sets metadata columns.
+	Rows are flagged so DATEV Mapping keeps their accounts, BU and Umsatz
+	(see get_mapping_target_column).
 	"""
 	if voucher_type != "Purchase Invoice":
 		return []
@@ -763,6 +763,7 @@ def make_invoice_settlement_row(base_row, konto, gegenkonto, amount, bu_schluess
 	row["Konto"] = konto
 	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
 	row["BU-Schlüssel"] = bu_schluessel
+	row["_datev_settlement_row"] = True
 	return row
 
 
@@ -1619,6 +1620,10 @@ def apply_buchungsstapel_mapping(transactions, filters):
 			):
 				continue
 
+			target_column = get_mapping_target_column(row, mapping.get("map_to_column"))
+			if not target_column:
+				continue
+
 			value = resolve_map_to_value(
 				voucher_doc=voucher_doc,
 				map_to_field=mapping.get("map_to_field"),
@@ -1630,9 +1635,9 @@ def apply_buchungsstapel_mapping(transactions, filters):
 			if value is None:
 				continue
 
-			row[mapping.get("map_to_column")] = normalize_mapped_value(
+			row[target_column] = normalize_mapped_value(
 				value,
-				map_to_column=mapping.get("map_to_column"),
+				map_to_column=target_column,
 				account_name_to_number=account_name_to_number,
 			)
 
@@ -1686,6 +1691,26 @@ def select_buchungsstapel_field_mappings(mappings, voucher_type, party_account_t
 	)
 
 	return by_type.get(PARTY_ACCOUNT_TYPE_BOTH) or []
+
+
+def get_mapping_target_column(row, map_to_column):
+	"""
+	Column a mapping writes to on this row, or None to skip it.
+
+	Settlement rows (Is Paid, write-off) keep their own Kasse/Bank/write-off
+	account, BU and Umsatz. The invoice's Kreditor mapping (Gegenkonto on PI
+	rows) lands on their Konto, so payment and invoice use the same Kreditor.
+	"""
+	if not row.get("_datev_settlement_row"):
+		return map_to_column
+
+	if map_to_column == "Gegenkonto (ohne BU-Schlüssel)":
+		return "Konto"
+
+	if map_to_column in {"Konto", "BU-Schlüssel", "Umsatz (ohne Soll/Haben-Kz)"}:
+		return None
+
+	return map_to_column
 
 
 def should_preserve_existing_mapped_value(row, mapping):

@@ -947,6 +947,65 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 
 		self.assertIn(("70001", "9999", 119.0, "S", "90"), self.summarize_rows(grouped))
 
+	def test_purchase_invoice_mapping_keeps_settlement_accounts_and_shares_kreditor(self):
+		purchase_invoice = self.make_paid_purchase_invoice(
+			paid_amount=118,
+			base_paid_amount=118,
+			write_off_account="Write Off - _TG",
+			write_off_amount=1,
+			base_write_off_amount=1,
+		)
+		grouped = self.group_paid_purchase_invoice(
+			purchase_invoice, self.make_paid_purchase_invoice_transactions()
+		)
+		# PI mapping as created on customer sites: Kreditor from header, Konto/BU from items
+		mapped_values = {
+			"custom_datev_account_no": "3300",
+			"items.custom_datev_account_no": "3400",
+			"items.custom_bu_schlussel": "9",
+			"bill_no": "RE-1",
+		}
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value={
+					"Purchase Invoice": [
+						frappe._dict({"map_to_field": field, "map_to_column": column})
+						for field, column in (
+							("custom_datev_account_no", "Gegenkonto (ohne BU-Schlüssel)"),
+							("items.custom_datev_account_no", "Konto"),
+							("items.custom_bu_schlussel", "BU-Schlüssel"),
+							("bill_no", "Beleginfo - Inhalt 5"),
+						)
+					]
+				},
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=purchase_invoice,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.resolve_map_to_value",
+				side_effect=lambda voucher_doc, map_to_field, **kwargs: mapped_values[map_to_field],
+			),
+		):
+			mapped = apply_buchungsstapel_mapping(grouped, {"company": "_Test GmbH"})
+
+		self.assertEqual(
+			self.summarize_rows(mapped),
+			[
+				("3300", "1000", 118.0, "S", "90"),
+				("3300", "4980", 1.0, "S", ""),
+				("3400", "3300", 100.0, "S", "9"),
+			],
+		)
+		self.assertEqual({row["Beleginfo - Inhalt 5"] for row in mapped}, {"RE-1"})
+
 	def test_groups_receive_payment_entry_rows_with_blank_bu_schluessel(self):
 		transactions = [
 			{
