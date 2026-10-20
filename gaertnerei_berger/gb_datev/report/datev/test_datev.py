@@ -776,6 +776,177 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual(len(other_rows), 1)
 		self.assertEqual(other_rows[0]["Belegfeld 1"], "ACC-PAY-0001")
 
+	def make_paid_purchase_invoice_transactions(self, sign=1):
+		"""GL rows of a PI with Is Paid: Kreditor H, expense S, then Kreditor S / Kasse H."""
+
+		def gl_row(amount, indicator, konto, party=False):
+			row = {
+				"Umsatz (ohne Soll/Haben-Kz)": amount,
+				"Soll/Haben-Kennzeichen": indicator,
+				"Konto": konto,
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "PINV-260020",
+				"Buchungstext": "Against Supplier Invoice RE-1",
+				"Beleginfo - Art 1": "Purchase Invoice",
+				"Beleginfo - Inhalt 1": "PINV-260020",
+			}
+			if party:
+				row["Beleginfo - Art 3"] = "Supplier"
+				row["Beleginfo - Inhalt 3"] = "Test Supplier"
+			return row
+
+		invoice, payment = ("H", "S") if sign > 0 else ("S", "H")
+		return [
+			gl_row(119, invoice, "70000", party=True),
+			gl_row(100, payment, "3400"),
+			gl_row(19, payment, "1576"),
+			gl_row(119, payment, "70000", party=True),
+			gl_row(119, invoice, "1000"),
+		]
+
+	def make_paid_purchase_invoice(self, sign=1, **values):
+		purchase_invoice = frappe._dict(
+			{
+				"name": "PINV-260020",
+				"company": "_Test GmbH",
+				"supplier": "Test Supplier",
+				"credit_to": "Creditors - _TG",
+				"is_paid": 1,
+				"cash_bank_account": "Kasse - _TG",
+				"paid_amount": sign * 119,
+				"base_paid_amount": sign * 119,
+				"items": [
+					frappe._dict(
+						{
+							"expense_account": "Expense A",
+							"custom_datev_account_no": "3400",
+							"custom_bu_schlussel": "9",
+							"item_tax_template": "DE Standard 19 Vorsteuer",
+							"base_net_amount": sign * 100,
+						}
+					),
+				],
+			}
+		)
+		purchase_invoice.update(values)
+		return purchase_invoice
+
+	def group_paid_purchase_invoice(self, purchase_invoice, transactions, bank_account_number="1000"):
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=purchase_invoice,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_party_account_number",
+				return_value="70001",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_payment_entry_account_number",
+				side_effect=lambda account_name, fallback_row: {
+					"Kasse - _TG": bank_account_number,
+					"Write Off - _TG": "4980",
+				}.get(account_name, ""),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_settings_bu_schluessel",
+				return_value="90",
+			),
+		):
+			return group_sales_invoice_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9999"}
+			)
+
+	@staticmethod
+	def summarize_rows(rows):
+		return sorted(
+			(
+				row["Konto"],
+				row["Gegenkonto (ohne BU-Schlüssel)"],
+				float(row["Umsatz (ohne Soll/Haben-Kz)"]),
+				row["Soll/Haben-Kennzeichen"],
+				row["BU-Schlüssel"],
+			)
+			for row in rows
+		)
+
+	def test_paid_purchase_invoice_exports_payment_row(self):
+		grouped = self.group_paid_purchase_invoice(
+			self.make_paid_purchase_invoice(), self.make_paid_purchase_invoice_transactions()
+		)
+
+		self.assertEqual(
+			self.summarize_rows(grouped),
+			[
+				("3400", "70001", 100.0, "S", "9"),
+				("70001", "1000", 119.0, "S", "90"),
+			],
+		)
+		self.assertEqual({row["Belegfeld 1"] for row in grouped}, {"PINV-260020"})
+
+	def test_partially_paid_purchase_invoice_exports_paid_amount(self):
+		grouped = self.group_paid_purchase_invoice(
+			self.make_paid_purchase_invoice(paid_amount=50, base_paid_amount=50),
+			self.make_paid_purchase_invoice_transactions(),
+		)
+
+		self.assertIn(("70001", "1000", 50.0, "S", "90"), self.summarize_rows(grouped))
+		self.assertEqual(len(grouped), 2)
+
+	def test_unpaid_purchase_invoice_has_no_payment_row(self):
+		grouped = self.group_paid_purchase_invoice(
+			self.make_paid_purchase_invoice(is_paid=0),
+			self.make_paid_purchase_invoice_transactions(),
+		)
+
+		self.assertEqual(self.summarize_rows(grouped), [("3400", "70001", 100.0, "S", "9")])
+
+	def test_paid_purchase_return_exports_refund_as_haben(self):
+		grouped = self.group_paid_purchase_invoice(
+			self.make_paid_purchase_invoice(sign=-1, is_return=1),
+			self.make_paid_purchase_invoice_transactions(sign=-1),
+		)
+
+		self.assertEqual(
+			self.summarize_rows(grouped),
+			[
+				("3400", "70001", 100.0, "H", "9"),
+				("70001", "1000", 119.0, "H", "90"),
+			],
+		)
+
+	def test_purchase_invoice_write_off_exports_write_off_row(self):
+		grouped = self.group_paid_purchase_invoice(
+			self.make_paid_purchase_invoice(
+				paid_amount=118,
+				base_paid_amount=118,
+				write_off_account="Write Off - _TG",
+				write_off_amount=1,
+				base_write_off_amount=1,
+			),
+			self.make_paid_purchase_invoice_transactions(),
+		)
+
+		self.assertEqual(
+			self.summarize_rows(grouped),
+			[
+				("3400", "70001", 100.0, "S", "9"),
+				("70001", "1000", 118.0, "S", "90"),
+				("70001", "4980", 1.0, "S", ""),
+			],
+		)
+
+	def test_payment_row_falls_back_to_temporary_against_account(self):
+		grouped = self.group_paid_purchase_invoice(
+			self.make_paid_purchase_invoice(),
+			self.make_paid_purchase_invoice_transactions(),
+			bank_account_number="",
+		)
+
+		self.assertIn(("70001", "9999", 119.0, "S", "90"), self.summarize_rows(grouped))
+
 	def test_groups_receive_payment_entry_rows_with_blank_bu_schluessel(self):
 		transactions = [
 			{

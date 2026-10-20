@@ -15,8 +15,9 @@ from decimal import Decimal, ROUND_HALF_UP
 import frappe
 from erpnext.accounts.utils import get_fiscal_year
 from frappe import _
-from frappe.utils import cint
+from frappe.utils import cint, flt
 
+from gaertnerei_berger.gb_datev.payment_entry import get_settings_bu_schluessel
 from gaertnerei_berger.utils.datev_constants import (
 	AccountNames,
 	DebtorsCreditors,
@@ -556,7 +557,9 @@ def get_grouped_invoice_rows(voucher_type, voucher_no, voucher_rows, filters):
 		)
 
 	if grouped_rows:
-		return list(grouped_rows.values())
+		rows = list(grouped_rows.values())
+		rows.extend(get_invoice_settlement_rows(voucher_type, voucher_doc, base_row, gegenkonto, filters))
+		return rows
 
 	return voucher_rows
 
@@ -700,6 +703,63 @@ def make_grouped_invoice_row(voucher_type, base_row, konto, gegenkonto, bu_schlu
 	row = dict(base_row)
 	row["Umsatz (ohne Soll/Haben-Kz)"] = abs(amount)
 	row["Soll/Haben-Kennzeichen"] = get_grouped_invoice_amount_indicator(voucher_type, amount)
+	row["Konto"] = konto
+	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
+	row["BU-Schlüssel"] = bu_schluessel
+	return row
+
+
+def get_invoice_settlement_rows(voucher_type, voucher_doc, base_row, party_konto, filters):
+	"""
+	Rows for postings ERPNext writes on the invoice itself (Is Paid, write-off).
+
+	Grouping replaces the raw GL rows with item rows, so these would be lost.
+	Orientation follows Payment Entry Pay: Kreditor on Konto, Kasse/Bank on
+	Gegenkonto, S. Negative amounts (paid returns) flip to H.
+
+	A user DATEV Mapping on Konto/Gegenkonto for Purchase Invoice would also
+	overwrite these rows; the seeded mapping only sets metadata columns.
+	"""
+	if voucher_type != "Purchase Invoice":
+		return []
+
+	rows = []
+	paid_amount = flt(voucher_doc.get("base_paid_amount") or voucher_doc.get("paid_amount"))
+	if cint(voucher_doc.get("is_paid")) and voucher_doc.get("cash_bank_account") and paid_amount:
+		rows.append(
+			make_invoice_settlement_row(
+				base_row=base_row,
+				konto=party_konto,
+				gegenkonto=get_invoice_settlement_gegenkonto(voucher_doc.get("cash_bank_account"), filters),
+				amount=paid_amount,
+				bu_schluessel=get_settings_bu_schluessel(voucher_doc.get("company"), "pay_bu_schluessel"),
+			)
+		)
+
+	write_off_amount = flt(voucher_doc.get("base_write_off_amount") or voucher_doc.get("write_off_amount"))
+	if voucher_doc.get("write_off_account") and write_off_amount:
+		rows.append(
+			make_invoice_settlement_row(
+				base_row=base_row,
+				konto=party_konto,
+				gegenkonto=get_invoice_settlement_gegenkonto(voucher_doc.get("write_off_account"), filters),
+				amount=write_off_amount,
+				bu_schluessel="",
+			)
+		)
+
+	return rows
+
+
+def get_invoice_settlement_gegenkonto(account_name, filters):
+	# Fall through to the temporary against account (9090) like other ungroupable rows
+	return get_payment_entry_account_number(account_name, None) or filters.get("against_account") or ""
+
+
+def make_invoice_settlement_row(base_row, konto, gegenkonto, amount, bu_schluessel):
+	row = dict(base_row)
+	row["Umsatz (ohne Soll/Haben-Kz)"] = abs(amount)
+	row["Soll/Haben-Kennzeichen"] = get_party_first_amount_indicator("purchase", amount)
 	row["Konto"] = konto
 	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
 	row["BU-Schlüssel"] = bu_schluessel

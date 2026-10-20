@@ -122,6 +122,13 @@ class TestPaymentEntryDatevFields(FrappeTestCase):
 		):
 			self.assertEqual(get_payment_bu_schluessel(doc), "")
 
+	def test_settings_bu_blank_without_company(self):
+		from gaertnerei_berger.gb_datev.payment_entry import get_settings_bu_schluessel
+
+		with patch("gaertnerei_berger.gb_datev.payment_entry.frappe.db.exists") as exists:
+			self.assertEqual(get_settings_bu_schluessel(None, "pay_bu_schluessel"), "")
+			exists.assert_not_called()
+
 
 class TestPaymentEntryDatevMapping(FrappeTestCase):
 	def test_applies_custom_bu_schlussel_from_mapping(self):
