@@ -15,7 +15,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import frappe
 from erpnext.accounts.utils import get_fiscal_year
 from frappe import _
-from frappe.utils import cint, flt
+from frappe.utils import cint, cstr, flt
 
 from gaertnerei_berger.gb_datev.payment_entry import get_settings_bu_schluessel
 from gaertnerei_berger.utils.datev_constants import (
@@ -27,6 +27,11 @@ from gaertnerei_berger.utils.datev_csv import build_datev_zip_bytes, get_datev_c
 
 BUCHUNGSSTAPEL_REPORT = "EXTF_Buchungsstapel.csv"
 ACCOUNT_TAX_RATE_PATTERN = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
+
+ACCOUNT_MAP_COLUMNS = frozenset({"Konto", "Gegenkonto (ohne BU-Schlüssel)"})
+
+# Party-less two-row Journal Entries on these root types export as one transfer row
+TRANSFER_ROOT_TYPES = frozenset({"Asset", "Liability", "Equity"})
 
 EXPORT_MODE_CONSULTANT = "consultant_booking"
 EXPORT_MODE_GL_MIRROR = "gl_mirror"
@@ -929,6 +934,10 @@ def get_grouped_journal_entry_rows(voucher_no, voucher_rows, filters):
 	if not voucher_doc:
 		return voucher_rows
 
+	soll_row, haben_row = get_journal_entry_transfer_rows(voucher_doc)
+	if soll_row:
+		return get_grouped_journal_entry_transfer_rows(voucher_rows, soll_row, haben_row)
+
 	party_row, grouped_row_inputs = get_qualifying_journal_entry_grouping(voucher_doc)
 	if not party_row or not grouped_row_inputs:
 		return voucher_rows
@@ -974,6 +983,82 @@ def get_grouped_journal_entry_rows(voucher_no, voucher_rows, filters):
 		grouped_rows.append(grouped_row)
 
 	return merge_journal_entry_datev_rows(grouped_rows)
+
+
+def get_grouped_journal_entry_transfer_rows(voucher_rows, soll_row, haben_row):
+	"""
+	Collapse a party-less two-row transfer (e.g. Bank an Kasse) into one row.
+
+	Like Payment Entry: Konto is the debited side, so S/H is always S. The
+	"Journal Entry - Both" mapping sets the same accounts from the header fields.
+	"""
+	if len(voucher_rows) != 2:
+		return voucher_rows
+
+	konto = get_journal_entry_export_account_number(soll_row)
+	gegenkonto = get_journal_entry_export_account_number(haben_row)
+	if not konto or not gegenkonto:
+		return voucher_rows
+
+	# GL row order within a voucher is not deterministic; base on the Soll row
+	base_row = next(
+		(row for row in voucher_rows if row.get("Soll/Haben-Kennzeichen") == "S"),
+		voucher_rows[0],
+	)
+	amount = soll_row.get("debit") or soll_row.get("debit_in_account_currency") or 0
+
+	grouped_row = dict(base_row)
+	grouped_row["Umsatz (ohne Soll/Haben-Kz)"] = abs(
+		Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+	)
+	grouped_row["Soll/Haben-Kennzeichen"] = "S"
+	grouped_row["Konto"] = konto
+	grouped_row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
+	grouped_row["BU-Schlüssel"] = ""
+	return [grouped_row]
+
+
+def get_journal_entry_transfer_rows(voucher_doc):
+	"""
+	Return (soll_row, haben_row) for a party-less two-row balance-sheet transfer.
+
+	Qualifies only when the JE has exactly two amount rows, neither row has a
+	party or is a tax row, and both accounts are Asset/Liability/Equity. Any
+	other shape returns (None, None) and keeps the raw GL rows (9090).
+	"""
+	account_rows = [row for row in (voucher_doc.get("accounts") or []) if has_journal_entry_amount(row)]
+	if len(account_rows) != 2:
+		return None, None
+
+	for row in account_rows:
+		if row.get("party_type") or row.get("party"):
+			return None, None
+		if is_journal_entry_tax_row(row):
+			return None, None
+		if get_journal_entry_account_root_type(row.get("account")) not in TRANSFER_ROOT_TYPES:
+			return None, None
+
+	soll_rows = [
+		row
+		for row in account_rows
+		if get_journal_entry_debit_amount(row) > 0 and get_journal_entry_credit_amount(row) == 0
+	]
+	haben_rows = [
+		row
+		for row in account_rows
+		if get_journal_entry_credit_amount(row) > 0 and get_journal_entry_debit_amount(row) == 0
+	]
+	if len(soll_rows) != 1 or len(haben_rows) != 1:
+		return None, None
+
+	return soll_rows[0], haben_rows[0]
+
+
+def get_journal_entry_account_root_type(account_name):
+	if not account_name:
+		return ""
+
+	return frappe.db.get_value("Account", account_name, "root_type") or ""
 
 
 def get_journal_entry_export_amount(business_row, tax_row, filters, company=None):
@@ -1635,6 +1720,11 @@ def apply_buchungsstapel_mapping(transactions, filters):
 				account_name_to_number=account_name_to_number,
 			)
 			if value is None:
+				continue
+
+			# An empty header field must never blank an account column (e.g. the
+			# 9090 Gegenkonto on Journal Entries that fall through to raw GL rows)
+			if target_column in ACCOUNT_MAP_COLUMNS and cstr(value).strip() == "":
 				continue
 
 			row[target_column] = normalize_mapped_value(

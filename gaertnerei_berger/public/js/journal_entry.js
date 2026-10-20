@@ -216,6 +216,13 @@ gaertnerei_berger.journal_entry = {
 					]),
 					"orange"
 				);
+			} else if (data.party_less) {
+				frm.dashboard.set_headline_alert(
+					__(
+						"DATEV: this entry is not grouped and will export against the temporary account 9090"
+					),
+					"orange"
+				);
 			}
 		};
 

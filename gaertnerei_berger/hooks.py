@@ -26,6 +26,7 @@ fixtures = [
 					"Journal Entry Account-custom_datev_code",
 					"Journal Entry-custom_datev_section",
 					"Journal Entry-custom_datev_account_no",
+					"Journal Entry-custom_datev_against_account_no",
 					"Journal Entry-custom_datev_end_section",
 					"Party Account-debtor_creditor_number",
 					"Payment Entry-custom_datev_section",

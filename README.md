@@ -50,6 +50,7 @@ Consultant Booking orientation (submitted vouchers only):
 | Payment Entry Pay | Personenkonto | Bank | S |
 | Journal Entry sales | Erlöskonto | Debitor | H |
 | Journal Entry purchase | Aufwand | Kreditor | S |
+| Journal Entry transfer (no party) | Soll-Konto | Haben-Konto | S |
 
 - **SI / PI:** grouping owns Konto / Gegenkonto / BU / Umsatz; Mapping is mostly metadata (`Both`).
 - **PE / JE:** Mapping owns Konto / Gegenkonto / BU; PE uses `custom_datev_*` (party side = Personenkonto).

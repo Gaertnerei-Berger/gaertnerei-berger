@@ -89,10 +89,13 @@ def _seed_directional_defaults():
 
 def _remove_obsolete_single_pe_je_both_if_split_exists():
 	"""
-	If PE/JE Receivable+Payable exist, remove a leftover 'Both' PE/JE mapping that only
+	If PE Receivable+Payable exist, remove a leftover 'Both' PE mapping that only
 	existed as the pre-split catch-all (optional cleanup).
+
+	Journal Entry is skipped: 'Journal Entry - Both' is a real default now and
+	owns Konto/Gegenkonto of party-less two-row transfers (GitLab #101).
 	"""
-	for voucher_type in ("Payment Entry", "Journal Entry"):
+	for voucher_type in ("Payment Entry",):
 		receivable = mapping_name(voucher_type, PARTY_ACCOUNT_TYPE_RECEIVABLE)
 		payable = mapping_name(voucher_type, PARTY_ACCOUNT_TYPE_PAYABLE)
 		both = mapping_name(voucher_type, PARTY_ACCOUNT_TYPE_BOTH)

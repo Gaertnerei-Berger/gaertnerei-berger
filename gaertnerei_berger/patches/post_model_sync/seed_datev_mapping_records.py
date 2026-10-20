@@ -91,4 +91,12 @@ def get_default_mappings():
 			{"map_to_field": "custom_datev_account_no", "map_to_column": "Gegenkonto (ohne BU-Schlüssel)"},
 			{"map_to_field": "accounts.custom_bu_schlussel", "map_to_column": "BU-Schlüssel"},
 		],
+		# Party-less two-row transfers (Bank an Kasse); header fields set on validate
+		("Journal Entry", "Both"): [
+			{"map_to_field": "custom_datev_account_no", "map_to_column": "Konto"},
+			{
+				"map_to_field": "custom_datev_against_account_no",
+				"map_to_column": "Gegenkonto (ohne BU-Schlüssel)",
+			},
+		],
 	}

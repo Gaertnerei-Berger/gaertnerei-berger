@@ -9,7 +9,9 @@ from gaertnerei_berger.gb_datev.report.datev.datev import (
 	get_journal_entry_account_type,
 	get_journal_entry_credit_amount,
 	get_journal_entry_debit_amount,
+	get_journal_entry_export_account_number,
 	get_journal_entry_row_amount,
+	get_journal_entry_transfer_rows,
 	get_qualifying_journal_entry_grouping,
 	is_purchase_journal_entry_party_row,
 	is_sales_journal_entry_party_row,
@@ -104,7 +106,20 @@ def validate_grouped_journal_entry_bu(doc):
 
 
 def sync_journal_entry_header_datev_account_no(doc):
-	"""Set header DATEV Account No from the party row (Debitor/Kreditor), like Sales Invoice."""
+	"""
+	Set header DATEV Account No from the party row (Debitor/Kreditor), like Sales Invoice.
+
+	Party-less two-row transfers (Bank an Kasse) follow Payment Entry instead:
+	Account No = Soll account, Against Account No = Haben account.
+	"""
+	soll_row, haben_row = get_journal_entry_transfer_rows(doc)
+	if soll_row:
+		doc.custom_datev_account_no = get_journal_entry_export_account_number(soll_row)
+		doc.custom_datev_against_account_no = get_journal_entry_export_account_number(haben_row)
+		return
+
+	doc.custom_datev_against_account_no = ""
+
 	direction = get_journal_entry_datev_direction(doc)
 	if not direction:
 		doc.custom_datev_account_no = ""
@@ -374,6 +389,18 @@ def get_journal_entry_datev_preview(doc):
 		doc = frappe.parse_json(doc)
 		doc = frappe.get_doc(doc)
 
+	soll_row, _haben_row = get_journal_entry_transfer_rows(doc)
+	if soll_row:
+		return {
+			"grouped": True,
+			"rows": 1,
+			"missing_bu": [],
+			"direction": None,
+			"party_account_type": "Both",
+			"transfer": True,
+			"party_less": True,
+		}
+
 	party_row, grouped_row_inputs = get_qualifying_journal_entry_grouping(doc)
 	missing_bu = []
 	if grouped_row_inputs:
@@ -381,13 +408,25 @@ def get_journal_entry_datev_preview(doc):
 			if not (business_row.get("custom_bu_schlussel") or business_row.get("custom_item_tax_template")):
 				missing_bu.append(business_row.idx)
 
+	direction = get_journal_entry_datev_direction(doc)
 	return {
 		"grouped": bool(party_row and grouped_row_inputs),
 		"rows": len(grouped_row_inputs or []),
 		"missing_bu": missing_bu,
-		"direction": get_journal_entry_datev_direction(doc),
+		"direction": direction,
 		"party_account_type": {
 			"sales": "Receivable",
 			"purchase": "Payable",
-		}.get(get_journal_entry_datev_direction(doc) or "", "Both"),
+		}.get(direction or "", "Both"),
+		"transfer": False,
+		"party_less": is_party_less_journal_entry(doc),
 	}
+
+
+def is_party_less_journal_entry(doc):
+	"""True when the JE has amount rows and none of them carries a party."""
+	account_rows = [row for row in (doc.get("accounts") or []) if get_journal_entry_row_amount(row) > 0]
+	if not account_rows:
+		return False
+
+	return not any(row.get("party_type") or row.get("party") for row in account_rows)
