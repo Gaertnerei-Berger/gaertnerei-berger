@@ -3842,3 +3842,58 @@ class TestDatevPaymentEntryMultiInvoice(TestCase):
 
 		switched = apply_payment_entry_belegfeld_1(grouped, {"payment_belegfeld_1": "invoice"})
 		self.assertEqual(switched[0]["Belegfeld 1"], "ACC-SINV-1")
+
+	def test_pipeline_maps_before_switching_belegfeld_1(self):
+		"""Mapping loads the Payment Entry by Belegfeld 1, so the switch must come last."""
+		payment_doc = self.payment_doc("Receive")
+		mappings = {
+			"Payment Entry": {
+				"Receivable": [
+					frappe._dict({"map_to_field": "paid_amount", "map_to_column": "Umsatz (ohne Soll/Haben-Kz)"}),
+					frappe._dict({"map_to_field": "custom_bu_schlussel", "map_to_column": "BU-Schlüssel"}),
+				]
+			}
+		}
+
+		def load_payment_only(voucher_type, voucher_no):
+			# An invoice number in Belegfeld 1 finds no Payment Entry
+			return payment_doc if (voucher_type, voucher_no) == ("Payment Entry", self.PAYMENT) else None
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_transactions",
+				return_value=self.receive_rows(),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				side_effect=load_payment_only,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value=mappings,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+		):
+			rows = prepare_buchungsstapel_transactions(
+				{
+					"company": "My Company",
+					"against_account": "9090",
+					"buchungsstapel_export_mode": "consultant_booking",
+					"payment_line_mode": "per_invoice",
+					"payment_belegfeld_1": "invoice",
+				}
+			)
+
+		self.assertEqual(
+			sorted(
+				(r["Belegfeld 1"], r["Umsatz (ohne Soll/Haben-Kz)"], r["Soll/Haben-Kennzeichen"], r["BU-Schlüssel"])
+				for r in rows
+			),
+			[
+				("ACC-SINV-2026-00017", Decimal("152.30"), "S", "80"),
+				("ACC-SINV-2026-00018", Decimal("34.50"), "H", "80"),
+			],
+		)
