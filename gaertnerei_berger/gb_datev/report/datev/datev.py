@@ -15,8 +15,9 @@ from decimal import Decimal, ROUND_HALF_UP
 import frappe
 from erpnext.accounts.utils import get_fiscal_year
 from frappe import _
-from frappe.utils import cint
+from frappe.utils import cint, flt
 
+from gaertnerei_berger.gb_datev.payment_entry import get_settings_bu_schluessel
 from gaertnerei_berger.utils.datev_constants import (
 	AccountNames,
 	DebtorsCreditors,
@@ -556,7 +557,9 @@ def get_grouped_invoice_rows(voucher_type, voucher_no, voucher_rows, filters):
 		)
 
 	if grouped_rows:
-		return list(grouped_rows.values())
+		rows = list(grouped_rows.values())
+		rows.extend(get_invoice_settlement_rows(voucher_type, voucher_doc, base_row, gegenkonto, filters))
+		return rows
 
 	return voucher_rows
 
@@ -703,6 +706,66 @@ def make_grouped_invoice_row(voucher_type, base_row, konto, gegenkonto, bu_schlu
 	row["Konto"] = konto
 	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
 	row["BU-Schlüssel"] = bu_schluessel
+	return row
+
+
+def get_invoice_settlement_rows(voucher_type, voucher_doc, base_row, party_konto, filters):
+	"""
+	Rows for postings ERPNext writes on the invoice itself (Is Paid, write-off).
+
+	Grouping replaces the raw GL rows with item rows, so these would be lost.
+	Orientation follows Payment Entry Pay: Kreditor on Konto, Kasse/Bank on
+	Gegenkonto, S. Negative amounts (paid returns) flip to H.
+
+	Rows are flagged so DATEV Mapping keeps their accounts, BU and Umsatz
+	(see get_mapping_target_column).
+	"""
+	if voucher_type != "Purchase Invoice":
+		return []
+
+	rows = []
+	paid_amount = flt(voucher_doc.get("base_paid_amount") or voucher_doc.get("paid_amount"))
+	if cint(voucher_doc.get("is_paid")) and voucher_doc.get("cash_bank_account") and paid_amount:
+		rows.append(
+			make_invoice_settlement_row(
+				base_row=base_row,
+				konto=party_konto,
+				gegenkonto=get_invoice_settlement_gegenkonto(voucher_doc.get("cash_bank_account"), filters),
+				amount=paid_amount,
+				bu_schluessel=get_settings_bu_schluessel(voucher_doc.get("company"), "pay_bu_schluessel"),
+			)
+		)
+
+	write_off_amount = flt(voucher_doc.get("base_write_off_amount") or voucher_doc.get("write_off_amount"))
+	if voucher_doc.get("write_off_account") and write_off_amount:
+		rows.append(
+			make_invoice_settlement_row(
+				base_row=base_row,
+				konto=party_konto,
+				gegenkonto=get_invoice_settlement_gegenkonto(voucher_doc.get("write_off_account"), filters),
+				amount=write_off_amount,
+				bu_schluessel="",
+			)
+		)
+
+	return rows
+
+
+def get_invoice_settlement_gegenkonto(account_name, filters):
+	# Fall through to the temporary against account (9090) like other ungroupable rows
+	return get_payment_entry_account_number(account_name, None) or filters.get("against_account") or ""
+
+
+def make_invoice_settlement_row(base_row, konto, gegenkonto, amount, bu_schluessel):
+	# Same Decimal type as item rows so the CSV writes both alike (119.00, not 119.0)
+	amount = Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+	row = dict(base_row)
+	row["Umsatz (ohne Soll/Haben-Kz)"] = abs(amount)
+	row["Soll/Haben-Kennzeichen"] = get_party_first_amount_indicator("purchase", amount)
+	row["Konto"] = konto
+	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
+	row["BU-Schlüssel"] = bu_schluessel
+	row["_datev_settlement_row"] = True
 	return row
 
 
@@ -1559,6 +1622,10 @@ def apply_buchungsstapel_mapping(transactions, filters):
 			):
 				continue
 
+			target_column = get_mapping_target_column(row, mapping.get("map_to_column"))
+			if not target_column:
+				continue
+
 			value = resolve_map_to_value(
 				voucher_doc=voucher_doc,
 				map_to_field=mapping.get("map_to_field"),
@@ -1570,9 +1637,9 @@ def apply_buchungsstapel_mapping(transactions, filters):
 			if value is None:
 				continue
 
-			row[mapping.get("map_to_column")] = normalize_mapped_value(
+			row[target_column] = normalize_mapped_value(
 				value,
-				map_to_column=mapping.get("map_to_column"),
+				map_to_column=target_column,
 				account_name_to_number=account_name_to_number,
 			)
 
@@ -1626,6 +1693,28 @@ def select_buchungsstapel_field_mappings(mappings, voucher_type, party_account_t
 	)
 
 	return by_type.get(PARTY_ACCOUNT_TYPE_BOTH) or []
+
+
+def get_mapping_target_column(row, map_to_column):
+	"""
+	Column a mapping writes to on this row, or None to skip it.
+
+	Settlement rows (Is Paid, write-off) keep their own Kasse/Bank/write-off
+	account, BU and Umsatz. The invoice's Kreditor mapping (Gegenkonto on PI
+	rows) lands on their Konto, so payment and invoice use the same Kreditor.
+	"""
+	if not row.get("_datev_settlement_row"):
+		return map_to_column
+
+	# Purchase orientation only; Sales Invoice POS rows (GitLab #99) carry the
+	# Debitor on Gegenkonto and would need their own rule here.
+	if map_to_column == "Gegenkonto (ohne BU-Schlüssel)":
+		return "Konto"
+
+	if map_to_column in {"Konto", "BU-Schlüssel", "Umsatz (ohne Soll/Haben-Kz)"}:
+		return None
+
+	return map_to_column
 
 
 def should_preserve_existing_mapped_value(row, mapping):

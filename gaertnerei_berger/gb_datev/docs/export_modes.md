@@ -26,6 +26,8 @@ For **Payment Entry** and **Journal Entry**, Mapping owns **Konto / Gegenkonto /
 |---------|-------|------------|-----|
 | Sales Invoice | Erlöskonto | Debitor | H |
 | Purchase Invoice | Aufwand | Kreditor | S |
+| PI Is Paid payment | Kreditor | Kasse/Bank | S |
+| PI write-off | Kreditor | Write-off account | S |
 | PE Receive | Bank | Personenkonto | S |
 | PE Pay | Personenkonto | Bank | S |
 | JE sales | Erlöskonto | Debitor | H |
@@ -40,6 +42,7 @@ The export includes only **submitted** vouchers (`docstatus = 1`). Draft and can
 Default for Berger. Matches live exports such as `RG-260020`.
 
 - Groups Sales/Purchase Invoice lines by Erlöskonto + tax/BU key
+- Adds settlement rows for **Is Paid** payments and write-offs on Purchase Invoice (BU = Settings pay BU for the payment, blank for write-off)
 - Groups simple Payment Entry (exactly 2 GL rows) and qualifying Journal Entry patterns
 - **Konto / Gegenkonto** for PE/JE from DATEV Mapping; SI/PI from grouping (+ metadata Mapping)
 - Temporary against account (**9090**) is **not** used on successfully grouped rows
