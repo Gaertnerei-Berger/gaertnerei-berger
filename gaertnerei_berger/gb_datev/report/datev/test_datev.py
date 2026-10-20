@@ -1181,6 +1181,285 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 
 		self.assertEqual(grouped, transactions)
 
+	def make_transfer_journal_entry_transactions(self, voucher_no, soll_konto="1800", haben_konto="1600"):
+		# Haben row first on purpose: GL row order within a voucher is not deterministic
+		return [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 100,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": haben_konto,
+				"Gegenkonto (ohne BU-Schlüssel)": "9090",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": voucher_no,
+				"Buchungstext": "Bank an Kasse",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": voucher_no,
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 100,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": soll_konto,
+				"Gegenkonto (ohne BU-Schlüssel)": "9090",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": voucher_no,
+				"Buchungstext": "Bank an Kasse",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": voucher_no,
+			},
+		]
+
+	def group_transfer_journal_entry(self, transactions, journal_entry, root_types, tax_accounts=()):
+		account_numbers = {
+			"Bank - _TG": "1800",
+			"Cash - _TG": "1600",
+			"Sales - _TG": "4400",
+			"VAT 19 - _TG": "3806",
+		}
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=journal_entry,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_account_root_type",
+				side_effect=lambda account: root_types.get(account, ""),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_account_type",
+				side_effect=lambda account: "Tax" if account in tax_accounts else "",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.is_journal_entry_tax_row",
+				side_effect=lambda row: row.account in tax_accounts,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_export_account_number",
+				side_effect=lambda row: account_numbers.get(row.account, ""),
+			),
+		):
+			return group_journal_entry_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9090"}
+			)
+
+	def test_groups_party_less_transfer_journal_entry_into_single_soll_row(self):
+		transactions = self.make_transfer_journal_entry_transactions("ACC-JV-2026-00009")
+		journal_entry = frappe._dict(
+			{
+				"name": "ACC-JV-2026-00009",
+				"company": "_Test GmbH",
+				"accounts": [
+					# Haben row first: Konto must still be the Soll side
+					frappe._dict(
+						{
+							"account": "Cash - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 100,
+						}
+					),
+					frappe._dict(
+						{
+							"account": "Bank - _TG",
+							"debit_in_account_currency": 100,
+							"credit_in_account_currency": 0,
+						}
+					),
+				],
+			}
+		)
+
+		grouped = self.group_transfer_journal_entry(
+			transactions,
+			journal_entry,
+			root_types={"Bank - _TG": "Asset", "Cash - _TG": "Asset"},
+		)
+
+		self.assertEqual(len(grouped), 1)
+		self.assertEqual(grouped[0]["Konto"], "1800")
+		self.assertEqual(grouped[0]["Gegenkonto (ohne BU-Schlüssel)"], "1600")
+		self.assertEqual(grouped[0]["Soll/Haben-Kennzeichen"], "S")
+		self.assertEqual(grouped[0]["BU-Schlüssel"], "")
+		self.assertEqual(str(grouped[0]["Umsatz (ohne Soll/Haben-Kz)"]), "100.00")
+		self.assertEqual(grouped[0]["Buchungstext"], "Bank an Kasse")
+
+	def test_leaves_party_less_journal_entry_with_income_row_untouched(self):
+		transactions = self.make_transfer_journal_entry_transactions(
+			"ACC-JV-2026-00010", soll_konto="1800", haben_konto="4400"
+		)
+		journal_entry = frappe._dict(
+			{
+				"name": "ACC-JV-2026-00010",
+				"company": "_Test GmbH",
+				"accounts": [
+					frappe._dict(
+						{
+							"account": "Bank - _TG",
+							"debit_in_account_currency": 100,
+							"credit_in_account_currency": 0,
+						}
+					),
+					frappe._dict(
+						{
+							"account": "Sales - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 100,
+						}
+					),
+				],
+			}
+		)
+
+		grouped = self.group_transfer_journal_entry(
+			[dict(row) for row in transactions],
+			journal_entry,
+			root_types={"Bank - _TG": "Asset", "Sales - _TG": "Income"},
+		)
+
+		self.assertEqual(len(grouped), 2)
+		self.assertEqual(
+			sorted((row["Konto"], row["Gegenkonto (ohne BU-Schlüssel)"]) for row in grouped),
+			[("1800", "9090"), ("4400", "9090")],
+		)
+
+	def test_leaves_party_less_journal_entry_with_tax_row_untouched(self):
+		transactions = self.make_transfer_journal_entry_transactions(
+			"ACC-JV-2026-00011", soll_konto="1800", haben_konto="3806"
+		)
+		journal_entry = frappe._dict(
+			{
+				"name": "ACC-JV-2026-00011",
+				"company": "_Test GmbH",
+				"accounts": [
+					frappe._dict(
+						{
+							"account": "Bank - _TG",
+							"debit_in_account_currency": 100,
+							"credit_in_account_currency": 0,
+						}
+					),
+					frappe._dict(
+						{
+							"account": "VAT 19 - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 100,
+						}
+					),
+				],
+			}
+		)
+
+		grouped = self.group_transfer_journal_entry(
+			[dict(row) for row in transactions],
+			journal_entry,
+			root_types={"Bank - _TG": "Asset", "VAT 19 - _TG": "Liability"},
+			tax_accounts={"VAT 19 - _TG"},
+		)
+
+		self.assertEqual(len(grouped), 2)
+		self.assertTrue(all(row["Gegenkonto (ohne BU-Schlüssel)"] == "9090" for row in grouped))
+
+	def test_leaves_party_less_one_to_many_journal_entry_untouched(self):
+		voucher_no = "ACC-JV-2026-00012"
+		transactions = self.make_transfer_journal_entry_transactions(voucher_no)
+		transactions.append(dict(transactions[0], **{"Konto": "1610"}))
+		journal_entry = frappe._dict(
+			{
+				"name": voucher_no,
+				"company": "_Test GmbH",
+				"accounts": [
+					frappe._dict({"account": "Bank - _TG", "debit_in_account_currency": 100}),
+					frappe._dict({"account": "Cash - _TG", "credit_in_account_currency": 50}),
+					frappe._dict({"account": "Cash 2 - _TG", "credit_in_account_currency": 50}),
+				],
+			}
+		)
+
+		grouped = self.group_transfer_journal_entry(
+			[dict(row) for row in transactions],
+			journal_entry,
+			root_types={"Bank - _TG": "Asset", "Cash - _TG": "Asset", "Cash 2 - _TG": "Asset"},
+		)
+
+		self.assertEqual(len(grouped), 3)
+
+	def test_journal_entry_both_mapping_sets_transfer_accounts_and_never_blanks_9090(self):
+		transfer_row = {
+			"Umsatz (ohne Soll/Haben-Kz)": 100,
+			"Soll/Haben-Kennzeichen": "S",
+			"Konto": "1800",
+			"Gegenkonto (ohne BU-Schlüssel)": "1600",
+			"BU-Schlüssel": "",
+			"Belegfeld 1": "ACC-JV-2026-00009",
+			"Beleginfo - Art 1": "Journal Entry",
+		}
+		fallthrough_row = {
+			"Umsatz (ohne Soll/Haben-Kz)": 50,
+			"Soll/Haben-Kennzeichen": "H",
+			"Konto": "1610",
+			"Gegenkonto (ohne BU-Schlüssel)": "9090",
+			"BU-Schlüssel": "",
+			"Belegfeld 1": "ACC-JV-2026-00012",
+			"Beleginfo - Art 1": "Journal Entry",
+		}
+		vouchers = {
+			"ACC-JV-2026-00009": frappe._dict(
+				{
+					"name": "ACC-JV-2026-00009",
+					"custom_datev_account_no": "1800",
+					"custom_datev_against_account_no": "1600",
+				}
+			),
+			# Ungrouped party-less JE: validate leaves both header fields empty
+			"ACC-JV-2026-00012": frappe._dict(
+				{
+					"name": "ACC-JV-2026-00012",
+					"custom_datev_account_no": "",
+					"custom_datev_against_account_no": None,
+				}
+			),
+		}
+		both_mapping = {
+			"Journal Entry": {
+				"Both": [
+					frappe._dict({"map_to_field": "custom_datev_account_no", "map_to_column": "Konto"}),
+					frappe._dict(
+						{
+							"map_to_field": "custom_datev_against_account_no",
+							"map_to_column": "Gegenkonto (ohne BU-Schlüssel)",
+						}
+					),
+				]
+			}
+		}
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value=both_mapping,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				side_effect=lambda voucher_type, voucher_no: vouchers.get(voucher_no),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_voucher_party_account_type",
+				return_value="Both",
+			),
+		):
+			mapped = apply_buchungsstapel_mapping(
+				[transfer_row, fallthrough_row], {"company": "_Test GmbH"}
+			)
+
+		self.assertEqual(mapped[0]["Konto"], "1800")
+		self.assertEqual(mapped[0]["Gegenkonto (ohne BU-Schlüssel)"], "1600")
+		self.assertEqual(mapped[1]["Konto"], "1610")
+		self.assertEqual(mapped[1]["Gegenkonto (ohne BU-Schlüssel)"], "9090")
+
 	def test_groups_sales_journal_entry_into_single_line(self):
 		transactions = [
 			{
