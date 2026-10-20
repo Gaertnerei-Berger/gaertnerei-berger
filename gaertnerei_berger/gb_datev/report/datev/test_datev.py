@@ -12,6 +12,7 @@ from frappe.utils import cstr, now_datetime, today
 
 from gaertnerei_berger.gb_datev.report.datev.datev import (
 	apply_buchungsstapel_mapping,
+	apply_payment_entry_belegfeld_1,
 	download_datev_csv,
 	execute,
 	get_account_names,
@@ -3641,3 +3642,203 @@ class TestDatevMappedUmsatz(TestCase):
 			mapped = apply_buchungsstapel_mapping(transactions, {"company": "_Test GmbH"})
 
 		self.assertEqual(mapped[0]["Umsatz (ohne Soll/Haben-Kz)"], Decimal("303.41"))
+
+
+class TestDatevPaymentEntryMultiInvoice(TestCase):
+	"""One payment settling several invoices / credit notes (GitLab #104)."""
+
+	PAYMENT = "ACC-PAY-2026-00010"
+
+	def setUp(self):
+		self.party_type, self.invoice_doctype = "Customer", "Sales Invoice"
+
+	def gl_row(self, amount, indicator, konto, against=None, party=True):
+		row = {
+			"Umsatz (ohne Soll/Haben-Kz)": Decimal(str(amount)),
+			"Soll/Haben-Kennzeichen": indicator,
+			"Konto": konto,
+			"Gegenkonto (ohne BU-Schlüssel)": "9090",
+			"BU-Schlüssel": "",
+			"Belegdatum": today(),
+			"Belegfeld 1": self.PAYMENT,
+			"Buchungstext": "Payment Entry",
+			"Beleginfo - Art 1": "Payment Entry",
+			"Beleginfo - Inhalt 1": self.PAYMENT,
+		}
+		if party:
+			row["Beleginfo - Art 3"] = self.party_type
+			row["Beleginfo - Inhalt 3"] = "Wiemer Ivonne"
+		if against:
+			row["Beleginfo - Art 2"] = self.invoice_doctype
+			row["Beleginfo - Inhalt 2"] = against
+		return row
+
+	def payment_doc(self, payment_type):
+		return frappe._dict(
+			{
+				"name": self.PAYMENT,
+				"payment_type": payment_type,
+				"party_type": self.party_type,
+				"party": "Wiemer Ivonne",
+				"company": "My Company",
+				"paid_amount": 117.8,
+				"custom_datev_account_no": "1820" if payment_type == "Receive" else "70001",
+				"custom_datev_against_account_no": "10318" if payment_type == "Receive" else "1820",
+				"custom_bu_schlussel": "80" if payment_type == "Receive" else "90",
+			}
+		)
+
+	def receive_rows(self):
+		self.party_type, self.invoice_doctype = "Customer", "Sales Invoice"
+		return [
+			self.gl_row(117.80, "S", "1820", party=False),
+			self.gl_row(34.50, "S", "10318", against="ACC-SINV-2026-00018"),
+			self.gl_row(152.30, "H", "10318", against="ACC-SINV-2026-00017"),
+		]
+
+	def group(self, rows, payment_doc, **filters):
+		with patch(
+			"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+			return_value=payment_doc,
+		):
+			return group_payment_entry_buchungsstapel(
+				rows, {"company": "My Company", "against_account": "9090", **filters}
+			)
+
+	def summary(self, rows):
+		return [
+			(
+				row["Umsatz (ohne Soll/Haben-Kz)"],
+				row["Soll/Haben-Kennzeichen"],
+				row["Konto"],
+				row["Gegenkonto (ohne BU-Schlüssel)"],
+				row.get("Beleginfo - Inhalt 2"),
+			)
+			for row in rows
+		]
+
+	def test_invoice_and_credit_note_export_one_line_each(self):
+		rows = self.receive_rows()
+		grouped = self.group(rows, self.payment_doc("Receive"), payment_line_mode="per_invoice")
+
+		self.assertEqual(
+			sorted(self.summary(grouped), key=lambda r: r[4]),
+			[
+				(Decimal("152.30"), "S", "1820", "10318", "ACC-SINV-2026-00017"),
+				(Decimal("34.50"), "H", "1820", "10318", "ACC-SINV-2026-00018"),
+			],
+		)
+
+	def test_per_invoice_is_the_default(self):
+		grouped = self.group(self.receive_rows(), self.payment_doc("Receive"))
+		self.assertEqual(len(grouped), 2)
+
+	def test_per_payment_exports_one_net_line(self):
+		grouped = self.group(self.receive_rows(), self.payment_doc("Receive"), payment_line_mode="per_payment")
+
+		self.assertEqual(self.summary(grouped), [(Decimal("117.80"), "S", "1820", "10318", None)])
+		self.assertNotIn("_datev_payment_reference", grouped[0])
+
+	def test_two_invoices_and_unallocated_amount(self):
+		self.party_type, self.invoice_doctype = "Customer", "Sales Invoice"
+		rows = [
+			self.gl_row(250, "S", "1820", party=False),
+			self.gl_row(100, "H", "10318", against="ACC-SINV-1"),
+			self.gl_row(120, "H", "10318", against="ACC-SINV-2"),
+			self.gl_row(30, "H", "10318"),
+		]
+		grouped = self.group(rows, self.payment_doc("Receive"))
+
+		self.assertEqual(
+			[(r[0], r[1], r[4]) for r in self.summary(grouped)],
+			[
+				(Decimal("100.00"), "S", "ACC-SINV-1"),
+				(Decimal("120.00"), "S", "ACC-SINV-2"),
+				(Decimal("30.00"), "S", None),
+			],
+		)
+		self.assertNotIn("_datev_payment_reference", grouped[2])
+
+	def test_pay_with_debit_note_mirrors_receive(self):
+		self.party_type, self.invoice_doctype = "Supplier", "Purchase Invoice"
+		rows = [
+			self.gl_row(80, "H", "1820", party=False),
+			self.gl_row(100, "S", "70001", against="ACC-PINV-1"),
+			self.gl_row(20, "H", "70001", against="ACC-PINV-2"),
+		]
+		grouped = self.group(rows, self.payment_doc("Pay"))
+
+		self.assertEqual(
+			self.summary(grouped),
+			[
+				(Decimal("100.00"), "S", "70001", "1820", "ACC-PINV-1"),
+				(Decimal("20.00"), "H", "70001", "1820", "ACC-PINV-2"),
+			],
+		)
+
+	def test_party_rows_not_matching_bank_stay_raw(self):
+		rows = self.receive_rows()
+		rows[0]["Umsatz (ohne Soll/Haben-Kz)"] = Decimal("110.00")
+		grouped = self.group(rows, self.payment_doc("Receive"))
+		self.assertEqual(grouped, rows)
+
+	def test_mapping_keeps_allocated_amount_on_invoice_lines(self):
+		payment_doc = self.payment_doc("Receive")
+		grouped = self.group(self.receive_rows(), payment_doc)
+		mappings = {
+			"Payment Entry": {
+				"Receivable": [
+					frappe._dict({"map_to_field": "paid_amount", "map_to_column": "Umsatz (ohne Soll/Haben-Kz)"}),
+					frappe._dict({"map_to_field": "custom_bu_schlussel", "map_to_column": "BU-Schlüssel"}),
+				]
+			}
+		}
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value=mappings,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=payment_doc,
+			),
+		):
+			mapped = apply_buchungsstapel_mapping(grouped, {"company": "My Company"})
+
+		self.assertEqual(
+			sorted((r["Umsatz (ohne Soll/Haben-Kz)"], r["BU-Schlüssel"]) for r in mapped),
+			[(Decimal("34.50"), "80"), (Decimal("152.30"), "80")],
+		)
+
+	def test_belegfeld_1_setting_uses_invoice_number(self):
+		grouped = self.group(self.receive_rows(), self.payment_doc("Receive"))
+
+		unchanged = apply_payment_entry_belegfeld_1(
+			[dict(row) for row in grouped], {"payment_belegfeld_1": "payment_entry"}
+		)
+		self.assertEqual({row["Belegfeld 1"] for row in unchanged}, {self.PAYMENT})
+
+		switched = apply_payment_entry_belegfeld_1(grouped, {"payment_belegfeld_1": "invoice"})
+		self.assertEqual(
+			sorted(row["Belegfeld 1"] for row in switched),
+			["ACC-SINV-2026-00017", "ACC-SINV-2026-00018"],
+		)
+		self.assertEqual({row["Beleginfo - Inhalt 1"] for row in switched}, {self.PAYMENT})
+
+	def test_single_invoice_payment_gets_invoice_number_too(self):
+		self.party_type, self.invoice_doctype = "Customer", "Sales Invoice"
+		rows = [
+			self.gl_row(119, "S", "1820", party=False),
+			self.gl_row(119, "H", "10318", against="ACC-SINV-1"),
+		]
+		grouped = self.group(rows, self.payment_doc("Receive"))
+		self.assertEqual(len(grouped), 1)
+		self.assertNotIn("_datev_payment_line", grouped[0])
+
+		switched = apply_payment_entry_belegfeld_1(grouped, {"payment_belegfeld_1": "invoice"})
+		self.assertEqual(switched[0]["Belegfeld 1"], "ACC-SINV-1")

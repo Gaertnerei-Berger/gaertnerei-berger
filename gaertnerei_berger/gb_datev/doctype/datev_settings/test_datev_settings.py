@@ -7,6 +7,8 @@ from gaertnerei_berger.gb_datev.report.datev.datev import (
 	AMOUNT_BASIS_NET,
 	EXPORT_MODE_CONSULTANT,
 	EXPORT_MODE_GL_MIRROR,
+	PAYMENT_BELEGFELD_PAYMENT_ENTRY,
+	PAYMENT_LINES_PER_INVOICE,
 	UMSATZ_DECIMAL_COMMA,
 	get_datev_export_filter_values,
 )
@@ -73,3 +75,39 @@ class TestDATEVSettings(TestCase):
 			filter_values = get_datev_export_filter_values("_Test GmbH")
 
 		self.assertEqual(filter_values["umsatz_decimal_separator"], UMSATZ_DECIMAL_COMMA)
+
+	def test_payment_line_settings_default_when_blank(self):
+		settings = frappe._dict(
+			{
+				"temporary_against_account_number": "9090",
+				"buchungsstapel_export_mode": EXPORT_MODE_CONSULTANT,
+			}
+		)
+
+		with patch(
+			"gaertnerei_berger.gb_datev.report.datev.datev.frappe.get_cached_doc",
+			return_value=settings,
+		):
+			filter_values = get_datev_export_filter_values("_Test GmbH")
+
+		self.assertEqual(filter_values["payment_line_mode"], PAYMENT_LINES_PER_INVOICE)
+		self.assertEqual(filter_values["payment_belegfeld_1"], PAYMENT_BELEGFELD_PAYMENT_ENTRY)
+
+	def test_payment_line_settings_pass_through(self):
+		settings = frappe._dict(
+			{
+				"temporary_against_account_number": "9090",
+				"buchungsstapel_export_mode": EXPORT_MODE_CONSULTANT,
+				"payment_line_mode": "per_payment",
+				"payment_belegfeld_1": "invoice",
+			}
+		)
+
+		with patch(
+			"gaertnerei_berger.gb_datev.report.datev.datev.frappe.get_cached_doc",
+			return_value=settings,
+		):
+			filter_values = get_datev_export_filter_values("_Test GmbH")
+
+		self.assertEqual(filter_values["payment_line_mode"], "per_payment")
+		self.assertEqual(filter_values["payment_belegfeld_1"], "invoice")
