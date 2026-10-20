@@ -39,6 +39,12 @@ EXPORT_MODE_GL_MIRROR = "gl_mirror"
 AMOUNT_BASIS_NET = "net"
 AMOUNT_BASIS_GROSS = "gross"
 
+# DATEV Settings "Lines per Payment" / "Belegfeld 1 on Payment Lines" (GitLab #104)
+PAYMENT_LINES_PER_INVOICE = "per_invoice"
+PAYMENT_LINES_PER_PAYMENT = "per_payment"
+PAYMENT_BELEGFELD_PAYMENT_ENTRY = "payment_entry"
+PAYMENT_BELEGFELD_INVOICE = "invoice"
+
 UMSATZ_DECIMAL_COMMA = ","
 UMSATZ_DECIMAL_DOT = "."
 
@@ -212,6 +218,8 @@ def get_datev_export_filter_values(company):
 		"buchungsstapel_export_mode": export_mode,
 		"invoice_amount_basis": amount_basis,
 		"umsatz_decimal_separator": UMSATZ_DECIMAL_COMMA,
+		"payment_line_mode": settings.get("payment_line_mode") or PAYMENT_LINES_PER_INVOICE,
+		"payment_belegfeld_1": settings.get("payment_belegfeld_1") or PAYMENT_BELEGFELD_PAYMENT_ENTRY,
 	}
 
 
@@ -243,7 +251,9 @@ def prepare_buchungsstapel_transactions(filters):
 	transactions = group_sales_invoice_buchungsstapel(transactions, filters)
 	transactions = group_payment_entry_buchungsstapel(transactions, filters)
 	transactions = group_journal_entry_buchungsstapel(transactions, filters)
-	return apply_buchungsstapel_mapping(transactions, filters)
+	transactions = apply_buchungsstapel_mapping(transactions, filters)
+	# After mapping: mapping finds the voucher by Belegfeld 1
+	return apply_payment_entry_belegfeld_1(transactions, filters)
 
 
 def build_buchungsstapel_transactions(filters):
@@ -816,41 +826,136 @@ def group_payment_entry_buchungsstapel(transactions, filters):
 
 
 def get_grouped_payment_entry_rows(voucher_no, voucher_rows, filters):
-	if len(voucher_rows) != 2:
+	"""
+	Export rows for one Receive/Pay Payment Entry, or its raw GL rows if unsafe.
+
+	ERPNext posts one party GL row per allocated invoice / credit note (plus one
+	for an unallocated amount) and one bank row. A single party row becomes one
+	line as before. Several party rows become one line per party row
+	(per_invoice) or one net line (per_payment), see DATEV Settings. Anything
+	else (deductions, exchange differences) stays raw.
+	"""
+	if len(voucher_rows) < 2:
 		return voucher_rows
 
 	voucher_doc = load_voucher_doc("Payment Entry", voucher_no)
 	if not voucher_doc or voucher_doc.payment_type not in {"Receive", "Pay"}:
 		return voucher_rows
 
-	party_row = get_payment_entry_party_row(voucher_rows, voucher_doc)
-	bank_row = next((row for row in voucher_rows if row is not party_row), None)
+	party_rows = get_payment_entry_party_rows(voucher_rows, voucher_doc)
+	other_rows = [row for row in voucher_rows if not any(row is party_row for party_row in party_rows)]
+	if not party_rows or len(other_rows) != 1:
+		return voucher_rows
+
+	bank_row = other_rows[0]
+	if len(party_rows) > 1 and not payment_party_rows_settle_bank_row(voucher_doc, party_rows, bank_row):
+		return voucher_rows
 
 	# Mapping owns Konto/Gegenkonto via custom_datev_*; fall back if fields empty
 	konto = voucher_doc.get("custom_datev_account_no") or ""
 	gegenkonto = voucher_doc.get("custom_datev_against_account_no") or ""
 	if not konto or not gegenkonto:
 		konto, gegenkonto = get_payment_entry_export_accounts(
-			voucher_doc, party_row, bank_row, filters
+			voucher_doc, party_rows[0], bank_row, filters
 		)
 	if not konto or not gegenkonto:
 		return voucher_rows
 
-	base_row = dict(party_row or voucher_rows[0])
-	base_row["Konto"] = konto
-	base_row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
-	base_row["BU-Schlüssel"] = ""
+	if len(party_rows) == 1:
+		row = make_payment_entry_row(party_rows[0], konto, gegenkonto)
+		set_payment_entry_reference(row, party_rows[0], voucher_no)
+		return [row]
+
+	if filters.get("payment_line_mode") == PAYMENT_LINES_PER_PAYMENT:
+		# Net line; it settles several documents, so no single reference
+		row = make_payment_entry_row(party_rows[0], konto, gegenkonto)
+		row["Umsatz (ohne Soll/Haben-Kz)"] = to_datev_amount(flt(bank_row.get("Umsatz (ohne Soll/Haben-Kz)")))
+		row["Beleginfo - Art 2"] = None
+		row["Beleginfo - Inhalt 2"] = None
+		return [row]
+
+	rows = []
+	for party_row in party_rows:
+		amount = get_payment_party_row_signed_amount(voucher_doc, party_row)
+		row = make_payment_entry_row(party_row, konto, gegenkonto)
+		row["Umsatz (ohne Soll/Haben-Kz)"] = to_datev_amount(abs(amount))
+		# Credit notes / debit notes run against the payment direction
+		row["Soll/Haben-Kennzeichen"] = "S" if amount > 0 else "H"
+		# Mapping must keep the allocated amount instead of paid_amount
+		row["_datev_payment_line"] = True
+		set_payment_entry_reference(row, party_row, voucher_no)
+		rows.append(row)
+
+	return rows
+
+
+def make_payment_entry_row(party_row, konto, gegenkonto):
+	row = dict(party_row)
+	row["Konto"] = konto
+	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
+	row["BU-Schlüssel"] = ""
 	# Konto is always the debited side for both Receive (Bank) and Pay (Kreditor)
-	base_row["Soll/Haben-Kennzeichen"] = "S"
-	return [base_row]
+	row["Soll/Haben-Kennzeichen"] = "S"
+	return row
 
 
-def get_payment_entry_party_row(voucher_rows, voucher_doc):
-	for row in voucher_rows:
-		if row.get("Beleginfo - Art 3") == voucher_doc.party_type:
-			return row
+def set_payment_entry_reference(row, party_row, voucher_no):
+	"""Remember the settled invoice for the Belegfeld 1 setting."""
+	reference = party_row.get("Beleginfo - Inhalt 2")
+	if reference and reference != voucher_no:
+		row["_datev_payment_reference"] = reference
 
-	return None
+
+def get_payment_entry_party_rows(voucher_rows, voucher_doc):
+	if not voucher_doc.get("party_type"):
+		return []
+
+	return [row for row in voucher_rows if row.get("Beleginfo - Art 3") == voucher_doc.party_type]
+
+
+def get_payment_party_row_signed_amount(voucher_doc, party_row):
+	"""
+	Party row amount, positive in the payment's own direction.
+
+	Receive credits the Debitor for an invoice (H) and debits it for a credit
+	note (S). Pay is the mirror image.
+	"""
+	amount = Decimal(str(flt(party_row.get("Umsatz (ohne Soll/Haben-Kz)"))))
+	normal_indicator = "H" if voucher_doc.payment_type == "Receive" else "S"
+	return amount if party_row.get("Soll/Haben-Kennzeichen") == normal_indicator else -amount
+
+
+def payment_party_rows_settle_bank_row(voucher_doc, party_rows, bank_row):
+	"""True when the party rows net exactly to the bank posting."""
+	bank_indicator = "S" if voucher_doc.payment_type == "Receive" else "H"
+	if bank_row.get("Soll/Haben-Kennzeichen") != bank_indicator:
+		return False
+
+	net = sum(get_payment_party_row_signed_amount(voucher_doc, row) for row in party_rows)
+	bank_amount = Decimal(str(flt(bank_row.get("Umsatz (ohne Soll/Haben-Kz)"))))
+	return to_datev_amount(net) == to_datev_amount(bank_amount)
+
+
+def to_datev_amount(amount):
+	return Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def apply_payment_entry_belegfeld_1(transactions, filters):
+	"""
+	Put the settled invoice number into Belegfeld 1 when DATEV Settings ask for it.
+
+	Lets DATEV OPOS match payment and open item. The Payment Entry number stays
+	in Beleginfo - Inhalt 1.
+	"""
+	if filters.get("payment_belegfeld_1") != PAYMENT_BELEGFELD_INVOICE:
+		return transactions
+
+	for row in transactions:
+		reference = row.get("_datev_payment_reference")
+		if reference:
+			row["Belegfeld 1"] = reference
+
+	return transactions
 
 
 def get_payment_entry_export_accounts(voucher_doc, party_row, bank_row, filters):
@@ -1793,6 +1898,10 @@ def get_mapping_target_column(row, map_to_column):
 	account, BU and Umsatz. The invoice's Kreditor mapping (Gegenkonto on PI
 	rows) lands on their Konto, so payment and invoice use the same Kreditor.
 	"""
+	if row.get("_datev_payment_line") and map_to_column == "Umsatz (ohne Soll/Haben-Kz)":
+		# Per-invoice payment line keeps its allocated amount, not paid_amount
+		return None
+
 	if not row.get("_datev_settlement_row"):
 		return map_to_column
 

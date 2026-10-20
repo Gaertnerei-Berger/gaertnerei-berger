@@ -22,7 +22,11 @@
   "section_break_bu_schluessel",
   "receive_bu_schluessel",
   "column_break_bu_schluessel",
-  "pay_bu_schluessel"
+  "pay_bu_schluessel",
+  "section_break_payment_lines",
+  "payment_line_mode",
+  "column_break_payment_lines",
+  "payment_belegfeld_1"
  ],
  "fields": [
   {
@@ -137,11 +141,37 @@
    "fieldname": "pay_bu_schluessel",
    "fieldtype": "Data",
    "label": "Pay BU-Schlüssel"
+  },
+  {
+   "description": "How Payment Entries appear in the Buchungsstapel. Agree both options with your Steuerberater before the first export.",
+   "fieldname": "section_break_payment_lines",
+   "fieldtype": "Section Break",
+   "label": "Payment Lines"
+  },
+  {
+   "default": "per_invoice",
+   "description": "For a payment that settles several invoices or credit notes. per_invoice: one line per invoice / credit note with its allocated amount; credit notes get the opposite S/H, and the lines add up to the bank amount. per_payment: one line with the net bank amount. Payments settling a single invoice always export as one line.",
+   "fieldname": "payment_line_mode",
+   "fieldtype": "Select",
+   "label": "Lines per Payment",
+   "options": "per_invoice\nper_payment"
+  },
+  {
+   "fieldname": "column_break_payment_lines",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "payment_entry",
+   "description": "Document number in Belegfeld 1 of a payment line that belongs to one invoice. payment_entry: the Payment Entry number. invoice: the invoice / credit note number, so DATEV can match the payment to its open item (OPOS). The Payment Entry number stays in Beleginfo - Inhalt 1 either way. Lines without a single invoice (per_payment with several invoices, unallocated amounts) keep the Payment Entry number.",
+   "fieldname": "payment_belegfeld_1",
+   "fieldtype": "Select",
+   "label": "Belegfeld 1 on Payment Lines",
+   "options": "payment_entry\ninvoice"
   }
  ],
  "grid_page_length": 50,
  "links": [],
- "modified": "2026-09-02 18:00:00.000000",
+ "modified": "2026-10-20 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "GB DATEV",
  "name": "DATEV Settings",
