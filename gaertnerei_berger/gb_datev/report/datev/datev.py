@@ -2073,7 +2073,24 @@ def normalize_mapped_value(value, map_to_column=None, account_name_to_number=Non
 		and value in account_name_to_number
 	):
 		return account_name_to_number[value]
+	if map_to_column == "Umsatz (ohne Soll/Haben-Kz)":
+		return normalize_mapped_umsatz(value)
 	return str(value)
+
+
+def normalize_mapped_umsatz(value):
+	"""
+	Keep a mapped Umsatz numeric (GitLab #103).
+
+	As a string, "303.41" was read as 30.341,00 by the German-formatted report
+	preview and was quoted without the decimal comma in the CSV.
+	"""
+	if isinstance(value, str):
+		value = value.strip()
+		# German "1.234,56" -> "1234.56"
+		if "," in value:
+			value = value.replace(".", "").replace(",", ".")
+	return Decimal(str(flt(value))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def get_customers(filters):
