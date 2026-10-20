@@ -1,4 +1,5 @@
 import zipfile
+from decimal import Decimal
 from io import BytesIO
 from unittest import TestCase
 from unittest.mock import Mock, patch
@@ -25,6 +26,7 @@ from gaertnerei_berger.gb_datev.report.datev.datev import (
 	group_sales_invoice_buchungsstapel,
 	get_suppliers,
 	get_transactions,
+	normalize_mapped_value,
 	prepare_buchungsstapel_transactions,
 	run_query,
 )
@@ -3584,3 +3586,58 @@ class TestDatevFrozenExportContract(TestCase):
 		self.assertEqual(len(grouped), 1)
 		self._assert_orientation(grouped[0], "5300", "70001", "8", "S")
 
+
+
+class TestDatevMappedUmsatz(TestCase):
+	"""GitLab #103: a mapped Umsatz must stay numeric, never a dot-decimal string."""
+
+	def test_normalize_mapped_umsatz_returns_two_decimal_number(self):
+		umsatz = "Umsatz (ohne Soll/Haben-Kz)"
+		self.assertEqual(normalize_mapped_value(303.41, map_to_column=umsatz), Decimal("303.41"))
+		self.assertEqual(normalize_mapped_value(30.0, map_to_column=umsatz), Decimal("30.00"))
+		self.assertEqual(normalize_mapped_value("1234.5", map_to_column=umsatz), Decimal("1234.50"))
+		self.assertEqual(normalize_mapped_value("1.234,56", map_to_column=umsatz), Decimal("1234.56"))
+
+	def test_other_mapped_columns_stay_strings(self):
+		self.assertEqual(normalize_mapped_value(70217, map_to_column="Konto"), "70217")
+		self.assertEqual(normalize_mapped_value("Zahlung", map_to_column="Buchungstext"), "Zahlung")
+
+	def test_mapped_payment_entry_umsatz_is_numeric(self):
+		transactions = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 303.41,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "70217",
+				"Gegenkonto (ohne BU-Schlüssel)": "1800",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-PAY-2026-00002",
+				"Beleginfo - Art 1": "Payment Entry",
+			}
+		]
+		mappings = {
+			"Payment Entry": [
+				{"map_to_column": "Umsatz (ohne Soll/Haben-Kz)", "map_to_field": "paid_amount"},
+			]
+		}
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value=mappings,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=frappe._dict(name="ACC-PAY-2026-00002", payment_type="Pay"),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.resolve_map_to_value",
+				return_value=303.41,
+			),
+		):
+			mapped = apply_buchungsstapel_mapping(transactions, {"company": "_Test GmbH"})
+
+		self.assertEqual(mapped[0]["Umsatz (ohne Soll/Haben-Kz)"], Decimal("303.41"))
