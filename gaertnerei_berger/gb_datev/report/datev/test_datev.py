@@ -3588,6 +3588,46 @@ class TestDatevFrozenExportContract(TestCase):
 		self._assert_orientation(grouped[0], "5300", "70001", "8", "S")
 
 
+class TestDatevCsvUmsatzFormat(TestCase):
+	"""Umsatz must use a decimal comma whatever type the grouping step produced."""
+
+	def _render_umsatz_lines(self, amounts):
+		rows = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": amount,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "5300",
+				"Gegenkonto (ohne BU-Schlüssel)": "70217",
+				"Belegdatum": "2026-08-01",
+				"Belegfeld 1": f"VOUCHER-{index}",
+			}
+			for index, amount in enumerate(amounts)
+		]
+		with patch("gaertnerei_berger.utils.datev_csv.get_header", return_value=['"EXTF"']):
+			csv_data = get_datev_csv(
+				data=rows,
+				filters={"umsatz_decimal_separator": ","},
+				csv_class=Transactions,
+			)
+
+		# Skip the meta header and the column heading.
+		return [line.split(";")[0] for line in csv_data.decode("latin_1").split("\r\n")[2:] if line]
+
+	def test_umsatz_uses_comma_for_decimal_float_and_str(self):
+		self.assertEqual(
+			self._render_umsatz_lines([Decimal("100.00"), 100.0, "100.0", 100]),
+			["100,00", "100,00", "100,00", "100,00"],
+		)
+
+	def test_umsatz_has_two_decimals_and_no_thousands_separator(self):
+		self.assertEqual(
+			self._render_umsatz_lines([Decimal("1234.5"), 47104.0, "303.405", Decimal("0.1")]),
+			["1234,50", "47104,00", "303,41", "0,10"],
+		)
+
+	def test_missing_umsatz_stays_empty(self):
+		self.assertEqual(self._render_umsatz_lines([None, ""]), ['""', '""'])
+
 
 class TestDatevMappedUmsatz(TestCase):
 	"""GitLab #103: a mapped Umsatz must stay numeric, never a dot-decimal string."""
