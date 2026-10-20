@@ -885,6 +885,11 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 			],
 		)
 		self.assertEqual({row["Belegfeld 1"] for row in grouped}, {"PINV-260020"})
+		# Same Decimal formatting as item rows in the CSV
+		self.assertEqual(
+			sorted(str(row["Umsatz (ohne Soll/Haben-Kz)"]) for row in grouped),
+			["100.00", "119.00"],
+		)
 
 	def test_partially_paid_purchase_invoice_exports_paid_amount(self):
 		grouped = self.group_paid_purchase_invoice(

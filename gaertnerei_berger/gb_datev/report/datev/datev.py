@@ -757,6 +757,8 @@ def get_invoice_settlement_gegenkonto(account_name, filters):
 
 
 def make_invoice_settlement_row(base_row, konto, gegenkonto, amount, bu_schluessel):
+	# Same Decimal type as item rows so the CSV writes both alike (119.00, not 119.0)
+	amount = Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 	row = dict(base_row)
 	row["Umsatz (ohne Soll/Haben-Kz)"] = abs(amount)
 	row["Soll/Haben-Kennzeichen"] = get_party_first_amount_indicator("purchase", amount)
@@ -1704,6 +1706,8 @@ def get_mapping_target_column(row, map_to_column):
 	if not row.get("_datev_settlement_row"):
 		return map_to_column
 
+	# Purchase orientation only; Sales Invoice POS rows (GitLab #99) carry the
+	# Debitor on Gegenkonto and would need their own rule here.
 	if map_to_column == "Gegenkonto (ohne BU-Schlüssel)":
 		return "Konto"
 
