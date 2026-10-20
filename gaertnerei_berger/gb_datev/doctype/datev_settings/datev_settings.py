@@ -36,3 +36,9 @@ class DATEVSettings(Document):
 			"",
 		}:
 			throw(_("Amount Basis must be Net or Gross."))
+
+		if self.payment_line_mode not in {"per_invoice", "per_payment", None, ""}:
+			throw(_("Lines per Payment must be per_invoice or per_payment."))
+
+		if self.payment_belegfeld_1 not in {"payment_entry", "invoice", None, ""}:
+			throw(_("Belegfeld 1 on Payment Lines must be payment_entry or invoice."))

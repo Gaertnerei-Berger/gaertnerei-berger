@@ -47,11 +47,15 @@ def get_payment_bu_schluessel(doc):
 	if doc.payment_type not in {"Receive", "Pay"}:
 		return ""
 
-	company = doc.get("company")
+	fieldname = "receive_bu_schluessel" if doc.payment_type == "Receive" else "pay_bu_schluessel"
+	return get_settings_bu_schluessel(doc.get("company"), fieldname)
+
+
+def get_settings_bu_schluessel(company, fieldname):
+	"""BU-Schlüssel from the company's DATEV Settings, blank if not configured."""
 	if not company or not frappe.db.exists("DATEV Settings", company):
 		return ""
 
-	fieldname = "receive_bu_schluessel" if doc.payment_type == "Receive" else "pay_bu_schluessel"
 	return frappe.db.get_value("DATEV Settings", company, fieldname) or ""
 
 

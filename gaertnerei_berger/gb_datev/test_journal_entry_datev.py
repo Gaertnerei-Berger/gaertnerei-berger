@@ -9,6 +9,7 @@ from frappe.tests.utils import FrappeTestCase
 from gaertnerei_berger.gb_datev.journal_entry import (
 	clear_datev_fields_on_tax_rows,
 	get_item_tax_template_details,
+	get_journal_entry_datev_preview,
 	sync_datev_tax_lines,
 	sync_journal_entry_header_datev_account_no,
 )
@@ -484,3 +485,71 @@ class TestJournalEntryDatev(FrappeTestCase):
 			sync_journal_entry_header_datev_account_no(doc)
 
 		self.assertEqual(doc.custom_datev_account_no, "10111")
+
+	def make_transfer_doc(self, haben_account="Cash - _C"):
+		return frappe.get_doc(
+			{
+				"doctype": "Journal Entry",
+				"company": "My Company",
+				"custom_datev_account_no": "stale",
+				"custom_datev_against_account_no": "stale",
+				"accounts": [
+					# Haben row first: header Account No must still be the Soll side
+					{
+						"account": haben_account,
+						"debit_in_account_currency": 0,
+						"credit_in_account_currency": 100,
+					},
+					{
+						"account": "Bank - _C",
+						"debit_in_account_currency": 100,
+						"credit_in_account_currency": 0,
+					},
+				],
+			}
+		)
+
+	def sync_transfer_header(self, doc):
+		account_numbers = {"Bank - _C": "1800", "Cash - _C": "1600", "Sales - _C": "4400"}
+		root_types = {"Bank - _C": "Asset", "Cash - _C": "Asset", "Sales - _C": "Income"}
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_account_root_type",
+				side_effect=lambda account: root_types.get(account, ""),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.is_journal_entry_tax_row",
+				return_value=False,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_account_type",
+				return_value="",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.journal_entry.get_journal_entry_export_account_number",
+				side_effect=lambda row: account_numbers.get(row.account, ""),
+			),
+		):
+			sync_journal_entry_header_datev_account_no(doc)
+			return get_journal_entry_datev_preview(doc)
+
+	def test_sync_header_sets_soll_and_haben_account_for_party_less_transfer(self):
+		doc = self.make_transfer_doc()
+
+		preview = self.sync_transfer_header(doc)
+
+		self.assertEqual(doc.custom_datev_account_no, "1800")
+		self.assertEqual(doc.custom_datev_against_account_no, "1600")
+		self.assertTrue(preview["grouped"])
+		self.assertEqual(preview["rows"], 1)
+		self.assertEqual(preview["party_account_type"], "Both")
+
+	def test_sync_header_clears_against_account_for_non_transfer_shape(self):
+		doc = self.make_transfer_doc(haben_account="Sales - _C")
+
+		preview = self.sync_transfer_header(doc)
+
+		self.assertEqual(doc.custom_datev_account_no, "")
+		self.assertEqual(doc.custom_datev_against_account_no, "")
+		self.assertFalse(preview["grouped"])
+		self.assertTrue(preview["party_less"])

@@ -12,6 +12,7 @@ from frappe.utils import cstr, now_datetime, today
 
 from gaertnerei_berger.gb_datev.report.datev.datev import (
 	apply_buchungsstapel_mapping,
+	apply_payment_entry_belegfeld_1,
 	download_datev_csv,
 	execute,
 	get_account_names,
@@ -26,6 +27,7 @@ from gaertnerei_berger.gb_datev.report.datev.datev import (
 	group_sales_invoice_buchungsstapel,
 	get_suppliers,
 	get_transactions,
+	normalize_mapped_value,
 	prepare_buchungsstapel_transactions,
 	run_query,
 )
@@ -777,6 +779,241 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual(len(other_rows), 1)
 		self.assertEqual(other_rows[0]["Belegfeld 1"], "ACC-PAY-0001")
 
+	def make_paid_purchase_invoice_transactions(self, sign=1):
+		"""GL rows of a PI with Is Paid: Kreditor H, expense S, then Kreditor S / Kasse H."""
+
+		def gl_row(amount, indicator, konto, party=False):
+			row = {
+				"Umsatz (ohne Soll/Haben-Kz)": amount,
+				"Soll/Haben-Kennzeichen": indicator,
+				"Konto": konto,
+				"Gegenkonto (ohne BU-Schlüssel)": "9999",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": "PINV-260020",
+				"Buchungstext": "Against Supplier Invoice RE-1",
+				"Beleginfo - Art 1": "Purchase Invoice",
+				"Beleginfo - Inhalt 1": "PINV-260020",
+			}
+			if party:
+				row["Beleginfo - Art 3"] = "Supplier"
+				row["Beleginfo - Inhalt 3"] = "Test Supplier"
+			return row
+
+		invoice, payment = ("H", "S") if sign > 0 else ("S", "H")
+		return [
+			gl_row(119, invoice, "70000", party=True),
+			gl_row(100, payment, "3400"),
+			gl_row(19, payment, "1576"),
+			gl_row(119, payment, "70000", party=True),
+			gl_row(119, invoice, "1000"),
+		]
+
+	def make_paid_purchase_invoice(self, sign=1, **values):
+		purchase_invoice = frappe._dict(
+			{
+				"name": "PINV-260020",
+				"company": "_Test GmbH",
+				"supplier": "Test Supplier",
+				"credit_to": "Creditors - _TG",
+				"is_paid": 1,
+				"cash_bank_account": "Kasse - _TG",
+				"paid_amount": sign * 119,
+				"base_paid_amount": sign * 119,
+				"items": [
+					frappe._dict(
+						{
+							"expense_account": "Expense A",
+							"custom_datev_account_no": "3400",
+							"custom_bu_schlussel": "9",
+							"item_tax_template": "DE Standard 19 Vorsteuer",
+							"base_net_amount": sign * 100,
+						}
+					),
+				],
+			}
+		)
+		purchase_invoice.update(values)
+		return purchase_invoice
+
+	def group_paid_purchase_invoice(self, purchase_invoice, transactions, bank_account_number="1000"):
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=purchase_invoice,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_party_account_number",
+				return_value="70001",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_payment_entry_account_number",
+				side_effect=lambda account_name, fallback_row: {
+					"Kasse - _TG": bank_account_number,
+					"Write Off - _TG": "4980",
+				}.get(account_name, ""),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_settings_bu_schluessel",
+				return_value="90",
+			),
+		):
+			return group_sales_invoice_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9999"}
+			)
+
+	@staticmethod
+	def summarize_rows(rows):
+		return sorted(
+			(
+				row["Konto"],
+				row["Gegenkonto (ohne BU-Schlüssel)"],
+				float(row["Umsatz (ohne Soll/Haben-Kz)"]),
+				row["Soll/Haben-Kennzeichen"],
+				row["BU-Schlüssel"],
+			)
+			for row in rows
+		)
+
+	def test_paid_purchase_invoice_exports_payment_row(self):
+		grouped = self.group_paid_purchase_invoice(
+			self.make_paid_purchase_invoice(), self.make_paid_purchase_invoice_transactions()
+		)
+
+		self.assertEqual(
+			self.summarize_rows(grouped),
+			[
+				("3400", "70001", 100.0, "S", "9"),
+				("70001", "1000", 119.0, "S", "90"),
+			],
+		)
+		self.assertEqual({row["Belegfeld 1"] for row in grouped}, {"PINV-260020"})
+		# Same Decimal formatting as item rows in the CSV
+		self.assertEqual(
+			sorted(str(row["Umsatz (ohne Soll/Haben-Kz)"]) for row in grouped),
+			["100.00", "119.00"],
+		)
+
+	def test_partially_paid_purchase_invoice_exports_paid_amount(self):
+		grouped = self.group_paid_purchase_invoice(
+			self.make_paid_purchase_invoice(paid_amount=50, base_paid_amount=50),
+			self.make_paid_purchase_invoice_transactions(),
+		)
+
+		self.assertIn(("70001", "1000", 50.0, "S", "90"), self.summarize_rows(grouped))
+		self.assertEqual(len(grouped), 2)
+
+	def test_unpaid_purchase_invoice_has_no_payment_row(self):
+		grouped = self.group_paid_purchase_invoice(
+			self.make_paid_purchase_invoice(is_paid=0),
+			self.make_paid_purchase_invoice_transactions(),
+		)
+
+		self.assertEqual(self.summarize_rows(grouped), [("3400", "70001", 100.0, "S", "9")])
+
+	def test_paid_purchase_return_exports_refund_as_haben(self):
+		grouped = self.group_paid_purchase_invoice(
+			self.make_paid_purchase_invoice(sign=-1, is_return=1),
+			self.make_paid_purchase_invoice_transactions(sign=-1),
+		)
+
+		self.assertEqual(
+			self.summarize_rows(grouped),
+			[
+				("3400", "70001", 100.0, "H", "9"),
+				("70001", "1000", 119.0, "H", "90"),
+			],
+		)
+
+	def test_purchase_invoice_write_off_exports_write_off_row(self):
+		grouped = self.group_paid_purchase_invoice(
+			self.make_paid_purchase_invoice(
+				paid_amount=118,
+				base_paid_amount=118,
+				write_off_account="Write Off - _TG",
+				write_off_amount=1,
+				base_write_off_amount=1,
+			),
+			self.make_paid_purchase_invoice_transactions(),
+		)
+
+		self.assertEqual(
+			self.summarize_rows(grouped),
+			[
+				("3400", "70001", 100.0, "S", "9"),
+				("70001", "1000", 118.0, "S", "90"),
+				("70001", "4980", 1.0, "S", ""),
+			],
+		)
+
+	def test_payment_row_falls_back_to_temporary_against_account(self):
+		grouped = self.group_paid_purchase_invoice(
+			self.make_paid_purchase_invoice(),
+			self.make_paid_purchase_invoice_transactions(),
+			bank_account_number="",
+		)
+
+		self.assertIn(("70001", "9999", 119.0, "S", "90"), self.summarize_rows(grouped))
+
+	def test_purchase_invoice_mapping_keeps_settlement_accounts_and_shares_kreditor(self):
+		purchase_invoice = self.make_paid_purchase_invoice(
+			paid_amount=118,
+			base_paid_amount=118,
+			write_off_account="Write Off - _TG",
+			write_off_amount=1,
+			base_write_off_amount=1,
+		)
+		grouped = self.group_paid_purchase_invoice(
+			purchase_invoice, self.make_paid_purchase_invoice_transactions()
+		)
+		# PI mapping as created on customer sites: Kreditor from header, Konto/BU from items
+		mapped_values = {
+			"custom_datev_account_no": "3300",
+			"items.custom_datev_account_no": "3400",
+			"items.custom_bu_schlussel": "9",
+			"bill_no": "RE-1",
+		}
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value={
+					"Purchase Invoice": [
+						frappe._dict({"map_to_field": field, "map_to_column": column})
+						for field, column in (
+							("custom_datev_account_no", "Gegenkonto (ohne BU-Schlüssel)"),
+							("items.custom_datev_account_no", "Konto"),
+							("items.custom_bu_schlussel", "BU-Schlüssel"),
+							("bill_no", "Beleginfo - Inhalt 5"),
+						)
+					]
+				},
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=purchase_invoice,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.resolve_map_to_value",
+				side_effect=lambda voucher_doc, map_to_field, **kwargs: mapped_values[map_to_field],
+			),
+		):
+			mapped = apply_buchungsstapel_mapping(grouped, {"company": "_Test GmbH"})
+
+		self.assertEqual(
+			self.summarize_rows(mapped),
+			[
+				("3300", "1000", 118.0, "S", "90"),
+				("3300", "4980", 1.0, "S", ""),
+				("3400", "3300", 100.0, "S", "9"),
+			],
+		)
+		self.assertEqual({row["Beleginfo - Inhalt 5"] for row in mapped}, {"RE-1"})
+
 	def test_groups_receive_payment_entry_rows_with_blank_bu_schluessel(self):
 		transactions = [
 			{
@@ -946,6 +1183,285 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		)
 
 		self.assertEqual(grouped, transactions)
+
+	def make_transfer_journal_entry_transactions(self, voucher_no, soll_konto="1800", haben_konto="1600"):
+		# Haben row first on purpose: GL row order within a voucher is not deterministic
+		return [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 100,
+				"Soll/Haben-Kennzeichen": "H",
+				"Konto": haben_konto,
+				"Gegenkonto (ohne BU-Schlüssel)": "9090",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": voucher_no,
+				"Buchungstext": "Bank an Kasse",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": voucher_no,
+			},
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 100,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": soll_konto,
+				"Gegenkonto (ohne BU-Schlüssel)": "9090",
+				"BU-Schlüssel": "",
+				"Belegdatum": today(),
+				"Belegfeld 1": voucher_no,
+				"Buchungstext": "Bank an Kasse",
+				"Beleginfo - Art 1": "Journal Entry",
+				"Beleginfo - Inhalt 1": voucher_no,
+			},
+		]
+
+	def group_transfer_journal_entry(self, transactions, journal_entry, root_types, tax_accounts=()):
+		account_numbers = {
+			"Bank - _TG": "1800",
+			"Cash - _TG": "1600",
+			"Sales - _TG": "4400",
+			"VAT 19 - _TG": "3806",
+		}
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=journal_entry,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_account_root_type",
+				side_effect=lambda account: root_types.get(account, ""),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_account_type",
+				side_effect=lambda account: "Tax" if account in tax_accounts else "",
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.is_journal_entry_tax_row",
+				side_effect=lambda row: row.account in tax_accounts,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_journal_entry_export_account_number",
+				side_effect=lambda row: account_numbers.get(row.account, ""),
+			),
+		):
+			return group_journal_entry_buchungsstapel(
+				transactions, {"company": "_Test GmbH", "against_account": "9090"}
+			)
+
+	def test_groups_party_less_transfer_journal_entry_into_single_soll_row(self):
+		transactions = self.make_transfer_journal_entry_transactions("ACC-JV-2026-00009")
+		journal_entry = frappe._dict(
+			{
+				"name": "ACC-JV-2026-00009",
+				"company": "_Test GmbH",
+				"accounts": [
+					# Haben row first: Konto must still be the Soll side
+					frappe._dict(
+						{
+							"account": "Cash - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 100,
+						}
+					),
+					frappe._dict(
+						{
+							"account": "Bank - _TG",
+							"debit_in_account_currency": 100,
+							"credit_in_account_currency": 0,
+						}
+					),
+				],
+			}
+		)
+
+		grouped = self.group_transfer_journal_entry(
+			transactions,
+			journal_entry,
+			root_types={"Bank - _TG": "Asset", "Cash - _TG": "Asset"},
+		)
+
+		self.assertEqual(len(grouped), 1)
+		self.assertEqual(grouped[0]["Konto"], "1800")
+		self.assertEqual(grouped[0]["Gegenkonto (ohne BU-Schlüssel)"], "1600")
+		self.assertEqual(grouped[0]["Soll/Haben-Kennzeichen"], "S")
+		self.assertEqual(grouped[0]["BU-Schlüssel"], "")
+		self.assertEqual(str(grouped[0]["Umsatz (ohne Soll/Haben-Kz)"]), "100.00")
+		self.assertEqual(grouped[0]["Buchungstext"], "Bank an Kasse")
+
+	def test_leaves_party_less_journal_entry_with_income_row_untouched(self):
+		transactions = self.make_transfer_journal_entry_transactions(
+			"ACC-JV-2026-00010", soll_konto="1800", haben_konto="4400"
+		)
+		journal_entry = frappe._dict(
+			{
+				"name": "ACC-JV-2026-00010",
+				"company": "_Test GmbH",
+				"accounts": [
+					frappe._dict(
+						{
+							"account": "Bank - _TG",
+							"debit_in_account_currency": 100,
+							"credit_in_account_currency": 0,
+						}
+					),
+					frappe._dict(
+						{
+							"account": "Sales - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 100,
+						}
+					),
+				],
+			}
+		)
+
+		grouped = self.group_transfer_journal_entry(
+			[dict(row) for row in transactions],
+			journal_entry,
+			root_types={"Bank - _TG": "Asset", "Sales - _TG": "Income"},
+		)
+
+		self.assertEqual(len(grouped), 2)
+		self.assertEqual(
+			sorted((row["Konto"], row["Gegenkonto (ohne BU-Schlüssel)"]) for row in grouped),
+			[("1800", "9090"), ("4400", "9090")],
+		)
+
+	def test_leaves_party_less_journal_entry_with_tax_row_untouched(self):
+		transactions = self.make_transfer_journal_entry_transactions(
+			"ACC-JV-2026-00011", soll_konto="1800", haben_konto="3806"
+		)
+		journal_entry = frappe._dict(
+			{
+				"name": "ACC-JV-2026-00011",
+				"company": "_Test GmbH",
+				"accounts": [
+					frappe._dict(
+						{
+							"account": "Bank - _TG",
+							"debit_in_account_currency": 100,
+							"credit_in_account_currency": 0,
+						}
+					),
+					frappe._dict(
+						{
+							"account": "VAT 19 - _TG",
+							"debit_in_account_currency": 0,
+							"credit_in_account_currency": 100,
+						}
+					),
+				],
+			}
+		)
+
+		grouped = self.group_transfer_journal_entry(
+			[dict(row) for row in transactions],
+			journal_entry,
+			root_types={"Bank - _TG": "Asset", "VAT 19 - _TG": "Liability"},
+			tax_accounts={"VAT 19 - _TG"},
+		)
+
+		self.assertEqual(len(grouped), 2)
+		self.assertTrue(all(row["Gegenkonto (ohne BU-Schlüssel)"] == "9090" for row in grouped))
+
+	def test_leaves_party_less_one_to_many_journal_entry_untouched(self):
+		voucher_no = "ACC-JV-2026-00012"
+		transactions = self.make_transfer_journal_entry_transactions(voucher_no)
+		transactions.append(dict(transactions[0], **{"Konto": "1610"}))
+		journal_entry = frappe._dict(
+			{
+				"name": voucher_no,
+				"company": "_Test GmbH",
+				"accounts": [
+					frappe._dict({"account": "Bank - _TG", "debit_in_account_currency": 100}),
+					frappe._dict({"account": "Cash - _TG", "credit_in_account_currency": 50}),
+					frappe._dict({"account": "Cash 2 - _TG", "credit_in_account_currency": 50}),
+				],
+			}
+		)
+
+		grouped = self.group_transfer_journal_entry(
+			[dict(row) for row in transactions],
+			journal_entry,
+			root_types={"Bank - _TG": "Asset", "Cash - _TG": "Asset", "Cash 2 - _TG": "Asset"},
+		)
+
+		self.assertEqual(len(grouped), 3)
+
+	def test_journal_entry_both_mapping_sets_transfer_accounts_and_never_blanks_9090(self):
+		transfer_row = {
+			"Umsatz (ohne Soll/Haben-Kz)": 100,
+			"Soll/Haben-Kennzeichen": "S",
+			"Konto": "1800",
+			"Gegenkonto (ohne BU-Schlüssel)": "1600",
+			"BU-Schlüssel": "",
+			"Belegfeld 1": "ACC-JV-2026-00009",
+			"Beleginfo - Art 1": "Journal Entry",
+		}
+		fallthrough_row = {
+			"Umsatz (ohne Soll/Haben-Kz)": 50,
+			"Soll/Haben-Kennzeichen": "H",
+			"Konto": "1610",
+			"Gegenkonto (ohne BU-Schlüssel)": "9090",
+			"BU-Schlüssel": "",
+			"Belegfeld 1": "ACC-JV-2026-00012",
+			"Beleginfo - Art 1": "Journal Entry",
+		}
+		vouchers = {
+			"ACC-JV-2026-00009": frappe._dict(
+				{
+					"name": "ACC-JV-2026-00009",
+					"custom_datev_account_no": "1800",
+					"custom_datev_against_account_no": "1600",
+				}
+			),
+			# Ungrouped party-less JE: validate leaves both header fields empty
+			"ACC-JV-2026-00012": frappe._dict(
+				{
+					"name": "ACC-JV-2026-00012",
+					"custom_datev_account_no": "",
+					"custom_datev_against_account_no": None,
+				}
+			),
+		}
+		both_mapping = {
+			"Journal Entry": {
+				"Both": [
+					frappe._dict({"map_to_field": "custom_datev_account_no", "map_to_column": "Konto"}),
+					frappe._dict(
+						{
+							"map_to_field": "custom_datev_against_account_no",
+							"map_to_column": "Gegenkonto (ohne BU-Schlüssel)",
+						}
+					),
+				]
+			}
+		}
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value=both_mapping,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				side_effect=lambda voucher_type, voucher_no: vouchers.get(voucher_no),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_voucher_party_account_type",
+				return_value="Both",
+			),
+		):
+			mapped = apply_buchungsstapel_mapping(
+				[transfer_row, fallthrough_row], {"company": "_Test GmbH"}
+			)
+
+		self.assertEqual(mapped[0]["Konto"], "1800")
+		self.assertEqual(mapped[0]["Gegenkonto (ohne BU-Schlüssel)"], "1600")
+		self.assertEqual(mapped[1]["Konto"], "1610")
+		self.assertEqual(mapped[1]["Gegenkonto (ohne BU-Schlüssel)"], "9090")
 
 	def test_groups_sales_journal_entry_into_single_line(self):
 		transactions = [
@@ -3111,3 +3627,313 @@ class TestDatevCsvUmsatzFormat(TestCase):
 
 	def test_missing_umsatz_stays_empty(self):
 		self.assertEqual(self._render_umsatz_lines([None, ""]), ['""', '""'])
+
+
+class TestDatevMappedUmsatz(TestCase):
+	"""GitLab #103: a mapped Umsatz must stay numeric, never a dot-decimal string."""
+
+	def test_normalize_mapped_umsatz_returns_two_decimal_number(self):
+		umsatz = "Umsatz (ohne Soll/Haben-Kz)"
+		self.assertEqual(normalize_mapped_value(303.41, map_to_column=umsatz), Decimal("303.41"))
+		self.assertEqual(normalize_mapped_value(30.0, map_to_column=umsatz), Decimal("30.00"))
+		self.assertEqual(normalize_mapped_value("1234.5", map_to_column=umsatz), Decimal("1234.50"))
+		self.assertEqual(normalize_mapped_value("1.234,56", map_to_column=umsatz), Decimal("1234.56"))
+
+	def test_other_mapped_columns_stay_strings(self):
+		self.assertEqual(normalize_mapped_value(70217, map_to_column="Konto"), "70217")
+		self.assertEqual(normalize_mapped_value("Zahlung", map_to_column="Buchungstext"), "Zahlung")
+
+	def test_mapped_payment_entry_umsatz_is_numeric(self):
+		transactions = [
+			{
+				"Umsatz (ohne Soll/Haben-Kz)": 303.41,
+				"Soll/Haben-Kennzeichen": "S",
+				"Konto": "70217",
+				"Gegenkonto (ohne BU-Schlüssel)": "1800",
+				"Belegdatum": today(),
+				"Belegfeld 1": "ACC-PAY-2026-00002",
+				"Beleginfo - Art 1": "Payment Entry",
+			}
+		]
+		mappings = {
+			"Payment Entry": [
+				{"map_to_column": "Umsatz (ohne Soll/Haben-Kz)", "map_to_field": "paid_amount"},
+			]
+		}
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value=mappings,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=frappe._dict(name="ACC-PAY-2026-00002", payment_type="Pay"),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.resolve_map_to_value",
+				return_value=303.41,
+			),
+		):
+			mapped = apply_buchungsstapel_mapping(transactions, {"company": "_Test GmbH"})
+
+		self.assertEqual(mapped[0]["Umsatz (ohne Soll/Haben-Kz)"], Decimal("303.41"))
+
+
+class TestDatevPaymentEntryMultiInvoice(TestCase):
+	"""One payment settling several invoices / credit notes (GitLab #104)."""
+
+	PAYMENT = "ACC-PAY-2026-00010"
+
+	def setUp(self):
+		self.party_type, self.invoice_doctype = "Customer", "Sales Invoice"
+
+	def gl_row(self, amount, indicator, konto, against=None, party=True):
+		row = {
+			"Umsatz (ohne Soll/Haben-Kz)": Decimal(str(amount)),
+			"Soll/Haben-Kennzeichen": indicator,
+			"Konto": konto,
+			"Gegenkonto (ohne BU-Schlüssel)": "9090",
+			"BU-Schlüssel": "",
+			"Belegdatum": today(),
+			"Belegfeld 1": self.PAYMENT,
+			"Buchungstext": "Payment Entry",
+			"Beleginfo - Art 1": "Payment Entry",
+			"Beleginfo - Inhalt 1": self.PAYMENT,
+		}
+		if party:
+			row["Beleginfo - Art 3"] = self.party_type
+			row["Beleginfo - Inhalt 3"] = "Wiemer Ivonne"
+		if against:
+			row["Beleginfo - Art 2"] = self.invoice_doctype
+			row["Beleginfo - Inhalt 2"] = against
+		return row
+
+	def payment_doc(self, payment_type):
+		return frappe._dict(
+			{
+				"name": self.PAYMENT,
+				"payment_type": payment_type,
+				"party_type": self.party_type,
+				"party": "Wiemer Ivonne",
+				"company": "My Company",
+				"paid_amount": 117.8,
+				"custom_datev_account_no": "1820" if payment_type == "Receive" else "70001",
+				"custom_datev_against_account_no": "10318" if payment_type == "Receive" else "1820",
+				"custom_bu_schlussel": "80" if payment_type == "Receive" else "90",
+			}
+		)
+
+	def receive_rows(self):
+		self.party_type, self.invoice_doctype = "Customer", "Sales Invoice"
+		return [
+			self.gl_row(117.80, "S", "1820", party=False),
+			self.gl_row(34.50, "S", "10318", against="ACC-SINV-2026-00018"),
+			self.gl_row(152.30, "H", "10318", against="ACC-SINV-2026-00017"),
+		]
+
+	def group(self, rows, payment_doc, **filters):
+		with patch(
+			"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+			return_value=payment_doc,
+		):
+			return group_payment_entry_buchungsstapel(
+				rows, {"company": "My Company", "against_account": "9090", **filters}
+			)
+
+	def summary(self, rows):
+		return [
+			(
+				row["Umsatz (ohne Soll/Haben-Kz)"],
+				row["Soll/Haben-Kennzeichen"],
+				row["Konto"],
+				row["Gegenkonto (ohne BU-Schlüssel)"],
+				row.get("Beleginfo - Inhalt 2"),
+			)
+			for row in rows
+		]
+
+	def test_invoice_and_credit_note_export_one_line_each(self):
+		rows = self.receive_rows()
+		grouped = self.group(rows, self.payment_doc("Receive"), payment_line_mode="per_invoice")
+
+		self.assertEqual(
+			sorted(self.summary(grouped), key=lambda r: r[4]),
+			[
+				(Decimal("152.30"), "S", "1820", "10318", "ACC-SINV-2026-00017"),
+				(Decimal("34.50"), "H", "1820", "10318", "ACC-SINV-2026-00018"),
+			],
+		)
+
+	def test_per_invoice_is_the_default(self):
+		grouped = self.group(self.receive_rows(), self.payment_doc("Receive"))
+		self.assertEqual(len(grouped), 2)
+
+	def test_per_payment_exports_one_net_line(self):
+		grouped = self.group(self.receive_rows(), self.payment_doc("Receive"), payment_line_mode="per_payment")
+
+		self.assertEqual(self.summary(grouped), [(Decimal("117.80"), "S", "1820", "10318", None)])
+		self.assertNotIn("_datev_payment_reference", grouped[0])
+
+	def test_two_invoices_and_unallocated_amount(self):
+		self.party_type, self.invoice_doctype = "Customer", "Sales Invoice"
+		rows = [
+			self.gl_row(250, "S", "1820", party=False),
+			self.gl_row(100, "H", "10318", against="ACC-SINV-1"),
+			self.gl_row(120, "H", "10318", against="ACC-SINV-2"),
+			self.gl_row(30, "H", "10318"),
+		]
+		grouped = self.group(rows, self.payment_doc("Receive"))
+
+		self.assertEqual(
+			[(r[0], r[1], r[4]) for r in self.summary(grouped)],
+			[
+				(Decimal("100.00"), "S", "ACC-SINV-1"),
+				(Decimal("120.00"), "S", "ACC-SINV-2"),
+				(Decimal("30.00"), "S", None),
+			],
+		)
+		self.assertNotIn("_datev_payment_reference", grouped[2])
+
+	def test_pay_with_debit_note_mirrors_receive(self):
+		self.party_type, self.invoice_doctype = "Supplier", "Purchase Invoice"
+		rows = [
+			self.gl_row(80, "H", "1820", party=False),
+			self.gl_row(100, "S", "70001", against="ACC-PINV-1"),
+			self.gl_row(20, "H", "70001", against="ACC-PINV-2"),
+		]
+		grouped = self.group(rows, self.payment_doc("Pay"))
+
+		self.assertEqual(
+			self.summary(grouped),
+			[
+				(Decimal("100.00"), "S", "70001", "1820", "ACC-PINV-1"),
+				(Decimal("20.00"), "H", "70001", "1820", "ACC-PINV-2"),
+			],
+		)
+
+	def test_party_rows_not_matching_bank_stay_raw(self):
+		rows = self.receive_rows()
+		rows[0]["Umsatz (ohne Soll/Haben-Kz)"] = Decimal("110.00")
+		grouped = self.group(rows, self.payment_doc("Receive"))
+		self.assertEqual(grouped, rows)
+
+	def test_mapping_keeps_allocated_amount_on_invoice_lines(self):
+		payment_doc = self.payment_doc("Receive")
+		grouped = self.group(self.receive_rows(), payment_doc)
+		mappings = {
+			"Payment Entry": {
+				"Receivable": [
+					frappe._dict({"map_to_field": "paid_amount", "map_to_column": "Umsatz (ohne Soll/Haben-Kz)"}),
+					frappe._dict({"map_to_field": "custom_bu_schlussel", "map_to_column": "BU-Schlüssel"}),
+				]
+			}
+		}
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value=mappings,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				return_value=payment_doc,
+			),
+		):
+			mapped = apply_buchungsstapel_mapping(grouped, {"company": "My Company"})
+
+		self.assertEqual(
+			sorted((r["Umsatz (ohne Soll/Haben-Kz)"], r["BU-Schlüssel"]) for r in mapped),
+			[(Decimal("34.50"), "80"), (Decimal("152.30"), "80")],
+		)
+
+	def test_belegfeld_1_setting_uses_invoice_number(self):
+		grouped = self.group(self.receive_rows(), self.payment_doc("Receive"))
+
+		unchanged = apply_payment_entry_belegfeld_1(
+			[dict(row) for row in grouped], {"payment_belegfeld_1": "payment_entry"}
+		)
+		self.assertEqual({row["Belegfeld 1"] for row in unchanged}, {self.PAYMENT})
+
+		switched = apply_payment_entry_belegfeld_1(grouped, {"payment_belegfeld_1": "invoice"})
+		self.assertEqual(
+			sorted(row["Belegfeld 1"] for row in switched),
+			["ACC-SINV-2026-00017", "ACC-SINV-2026-00018"],
+		)
+		self.assertEqual({row["Beleginfo - Inhalt 1"] for row in switched}, {self.PAYMENT})
+
+	def test_single_invoice_payment_gets_invoice_number_too(self):
+		self.party_type, self.invoice_doctype = "Customer", "Sales Invoice"
+		rows = [
+			self.gl_row(119, "S", "1820", party=False),
+			self.gl_row(119, "H", "10318", against="ACC-SINV-1"),
+		]
+		grouped = self.group(rows, self.payment_doc("Receive"))
+		self.assertEqual(len(grouped), 1)
+		self.assertNotIn("_datev_payment_line", grouped[0])
+
+		switched = apply_payment_entry_belegfeld_1(grouped, {"payment_belegfeld_1": "invoice"})
+		self.assertEqual(switched[0]["Belegfeld 1"], "ACC-SINV-1")
+
+	def test_pipeline_maps_before_switching_belegfeld_1(self):
+		"""Mapping loads the Payment Entry by Belegfeld 1, so the switch must come last."""
+		payment_doc = self.payment_doc("Receive")
+		mappings = {
+			"Payment Entry": {
+				"Receivable": [
+					frappe._dict({"map_to_field": "paid_amount", "map_to_column": "Umsatz (ohne Soll/Haben-Kz)"}),
+					frappe._dict({"map_to_field": "custom_bu_schlussel", "map_to_column": "BU-Schlüssel"}),
+				]
+			}
+		}
+
+		def load_payment_only(voucher_type, voucher_no):
+			# An invoice number in Belegfeld 1 finds no Payment Entry
+			return payment_doc if (voucher_type, voucher_no) == ("Payment Entry", self.PAYMENT) else None
+
+		with (
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_transactions",
+				return_value=self.receive_rows(),
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
+				side_effect=load_payment_only,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
+				return_value=mappings,
+			),
+			patch(
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
+				return_value=({}, {}),
+			),
+		):
+			rows = prepare_buchungsstapel_transactions(
+				{
+					"company": "My Company",
+					"against_account": "9090",
+					"buchungsstapel_export_mode": "consultant_booking",
+					"payment_line_mode": "per_invoice",
+					"payment_belegfeld_1": "invoice",
+				}
+			)
+
+		self.assertEqual(
+			sorted(
+				(r["Belegfeld 1"], r["Umsatz (ohne Soll/Haben-Kz)"], r["Soll/Haben-Kennzeichen"], r["BU-Schlüssel"])
+				for r in rows
+			),
+			[
+				("ACC-SINV-2026-00017", Decimal("152.30"), "S", "80"),
+				("ACC-SINV-2026-00018", Decimal("34.50"), "H", "80"),
+			],
+		)

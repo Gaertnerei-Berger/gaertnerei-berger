@@ -62,3 +62,7 @@ Journal Entries have no items. Use the same **Item Tax Template** master data on
 | Template requirement | Prefer exactly one tax row on the Item Tax Template; multi-rate templates **warn** on save (export may be wrong) |
 
 Party Tax Category still guides which template to pick (Inland Ust vs Inland Vst) — same names as on invoice items.
+
+### Transfer without party
+
+A Journal Entry with exactly two rows, no party and no tax row, where both accounts are balance-sheet accounts (Asset/Liability/Equity), exports as **one** DATEV row — for example *Bank an Kasse*: Konto = Soll account (1800), Gegenkonto = Haben account (1600), S/H = S, BU blank. On save the system fills **DATEV Account No** and **DATEV Against Account No** on the header, and **DATEV Mapping** `Journal Entry - Both` maps them to Konto / Gegenkonto. No Item Tax Template is needed. Other party-less shapes (one-to-many, Income/Expense or tax accounts) still export as raw GL rows against the temporary account 9090; the form warns about this in an orange headline.
