@@ -4,6 +4,8 @@
 from frappe import _, throw
 from frappe.model.document import Document
 
+from gaertnerei_berger.gb_datev.account import has_automatic_accounts, msgprint_net_amount_basis_warning
+
 
 class DATEVSettings(Document):
 	def validate(self):
@@ -42,3 +44,6 @@ class DATEVSettings(Document):
 
 		if self.payment_belegfeld_1 not in {"payment_entry", "invoice", None, ""}:
 			throw(_("Belegfeld 1 on Payment Lines must be payment_entry or invoice."))
+
+		if self.invoice_amount_basis != "gross" and has_automatic_accounts(self.client):
+			msgprint_net_amount_basis_warning()

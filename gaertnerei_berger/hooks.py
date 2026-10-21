@@ -16,6 +16,8 @@ fixtures = [
 				"name",
 				"in",
 				[
+					"Account-custom_datev_section",
+					"Account-custom_datev_automatic_account",
 					"Item Tax Template-custom_datev_section",
 					"Item Tax Template-custom_bu_schlussel",
 					"Journal Entry Account-custom_datev_section",
@@ -150,6 +152,9 @@ doc_events = {
 	},
 	"Journal Entry": {
 		"validate": "gaertnerei_berger.gb_datev.journal_entry.validate_datev_fields",
+	},
+	"Account": {
+		"validate": "gaertnerei_berger.gb_datev.account.validate_automatic_account",
 	},
 }
 

@@ -246,14 +246,53 @@ def prepare_buchungsstapel_transactions(filters):
 	ensure_datev_query_filter_defaults(filters)
 	transactions = get_transactions(filters)
 	if is_gl_mirror_export(filters):
-		return apply_buchungsstapel_mapping(transactions, filters)
+		transactions = apply_buchungsstapel_mapping(transactions, filters)
+		return clear_automatic_account_bu_schluessel(transactions, filters)
 
 	transactions = group_sales_invoice_buchungsstapel(transactions, filters)
 	transactions = group_payment_entry_buchungsstapel(transactions, filters)
 	transactions = group_journal_entry_buchungsstapel(transactions, filters)
 	transactions = apply_buchungsstapel_mapping(transactions, filters)
 	# After mapping: mapping finds the voucher by Belegfeld 1
-	return apply_payment_entry_belegfeld_1(transactions, filters)
+	transactions = apply_payment_entry_belegfeld_1(transactions, filters)
+	# Last, so neither grouping nor a DATEV Mapping can bring the BU back
+	return clear_automatic_account_bu_schluessel(transactions, filters)
+
+
+def clear_automatic_account_bu_schluessel(transactions, filters):
+	"""
+	Leave BU-Schlüssel empty on rows booked to a DATEV Automatikkonto (GitLab #109).
+
+	DATEV takes the tax from an Automatikkonto (AM/AV). A BU-Schlüssel on the
+	same row would set the tax a second time. The account may sit on Konto or
+	Gegenkonto, depending on the voucher's orientation and its mapping.
+	"""
+	if not transactions:
+		return transactions
+
+	automatic_accounts = get_automatic_account_numbers(filters.get("company"))
+	if not automatic_accounts:
+		return transactions
+
+	for row in transactions:
+		accounts = {cstr(row.get("Konto")), cstr(row.get("Gegenkonto (ohne BU-Schlüssel)"))}
+		if accounts & automatic_accounts:
+			row["BU-Schlüssel"] = ""
+
+	return transactions
+
+
+def get_automatic_account_numbers(company):
+	"""Account numbers the company flags as DATEV Automatikkonto."""
+	if not company:
+		return set()
+
+	account_numbers = frappe.get_all(
+		"Account",
+		filters={"company": company, "is_group": 0, "custom_datev_automatic_account": 1},
+		pluck="account_number",
+	)
+	return {cstr(number) for number in account_numbers if number}
 
 
 def build_buchungsstapel_transactions(filters):
