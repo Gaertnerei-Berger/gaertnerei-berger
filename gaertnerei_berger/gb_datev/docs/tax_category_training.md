@@ -37,6 +37,18 @@ Each Item Tax Template carries **one** `custom_bu_schlussel`. Direction is selec
 3. Add matching rows on Item Group taxes.
 4. Set address/party Tax Category on affected customers and suppliers.
 
+## Automatikkonten
+
+Some DATEV accounts already imply the tax (Automatikkonto, marked AM/AV in the Steuerberater's chart, e.g. SKR03 8400 Erlöse 19 % USt or 3300 Wareneingang 7 % VSt). DATEV calculates the tax from the account, so the booking must **not** carry a BU-Schlüssel as well.
+
+1. Get the list of Automatikkonten from the Steuerberater. Do not guess.
+2. Open each **Account** and tick **DATEV Automatikkonto**.
+3. Keep **Amount Basis = Gross** in DATEV Settings. Saving the account or the settings warns when it is Net.
+
+The Item Tax Template keeps its BU-Schlüssel. The export leaves the BU empty on every row whose Konto or Gegenkonto is a flagged account, also when a DATEV Mapping fills the BU. Receivable, Payable, Bank, Cash and Tax accounts cannot be flagged.
+
+The template's tax rate must match the rate the Automatikkonto implies (no 7 % template on an Erlöse 19 % account). The export does not check this yet.
+
 ## Payment Entry
 
 Payment direction BU (80 receive / 90 pay) is configured in **DATEV Settings**, not via Tax Category.
