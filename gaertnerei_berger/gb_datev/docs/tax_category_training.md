@@ -13,6 +13,8 @@ Use this when setting up or reviewing **Customer**, **Supplier**, and **Address*
 
 Never set `Inland Vst` on a customer or `Inland Ust` on a supplier.
 
+Each Tax Category has a **Tax Category Type**: `Sales` for `* Ust`, `Purchase` for `* Vst`. Sales forms (Quotation, Sales Order, Delivery Note, Sales Invoice, POS, Customer, Sales Taxes Template) only offer Sales categories; purchase forms only offer Purchase categories; Tax Rule follows its own Tax Type. A category with an empty type shows on both sides. This only filters the dropdown; it does not block saving.
+
 ## Party vs address
 
 1. Set **Tax Category on Customer/Supplier** for the usual default.
@@ -32,7 +34,7 @@ Each Item Tax Template carries **one** `custom_bu_schlussel`. Direction is selec
 
 ## New tax situation (e.g. EU)
 
-1. Add Tax Categories: `EU Ust`, `EU Vst`.
+1. Add Tax Categories: `EU Ust` (Tax Category Type `Sales`), `EU Vst` (`Purchase`).
 2. Create direction-specific Item Tax Templates with the correct BU.
 3. Add matching rows on Item Group taxes.
 4. Set address/party Tax Category on affected customers and suppliers.
