@@ -19,6 +19,8 @@
   "export_mode",
   "invoice_amount_basis",
   "voucher_type",
+  "include_cancelled",
+  "storno_mode",
   "section_break_details",
   "error_message",
   "remarks"
@@ -131,16 +133,30 @@
    "label": "Remarks"
   },
   {
+   "default": "DATEV-EXP-.YYYY.-",
    "fieldname": "naming_series",
    "fieldtype": "Select",
    "hidden": 1,
    "label": "Naming Series",
-   "options": "DATEV-EXP-.YYYY.-",
-   "default": "DATEV-EXP-.YYYY.-"
+   "options": "DATEV-EXP-.YYYY.-"
+  },
+  {
+   "default": "0",
+   "fieldname": "include_cancelled",
+   "fieldtype": "Check",
+   "label": "Include Cancelled Vouchers",
+   "read_only": 1
+  },
+  {
+   "depends_on": "include_cancelled",
+   "fieldname": "storno_mode",
+   "fieldtype": "Data",
+   "label": "Storno Rows",
+   "read_only": 1
   }
  ],
  "links": [],
- "modified": "2026-08-27 00:00:00.000000",
+ "modified": "2026-10-28 19:30:00.000000",
  "modified_by": "Administrator",
  "module": "GB DATEV",
  "name": "DATEV Export",

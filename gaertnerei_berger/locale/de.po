@@ -59,6 +59,12 @@ msgstr "Anhänge anfügen"
 msgid "Attach Print"
 msgstr "Druck anfügen"
 
+#. Label of the section_break_cancelled (Section Break) field in DocType
+#. 'DATEV Settings'
+#: gaertnerei_berger/gb_datev/doctype/datev_settings/datev_settings.json
+msgid "Cancelled Vouchers"
+msgstr "Stornierte Belege"
+
 #: gaertnerei_berger/gb_datev/report/datev/datev.js:55
 msgid "Change DATEV Settings"
 msgstr "DATEV-Einstellungen ändern"
@@ -130,6 +136,12 @@ msgstr "Standarddrucksprache"
 msgid "Download DATEV File"
 msgstr "DATEV-Datei herunterladen"
 
+#. Description of the 'Include Cancelled Vouchers' (Check) field in DocType
+#. 'DATEV Settings'
+#: gaertnerei_berger/gb_datev/doctype/datev_settings/datev_settings.json
+msgid "Export cancelled vouchers as their original rows plus a Storno on the same date (GitLab #106). Meant for clean-up runs, e.g. an invoice that was cancelled and amended instead of credited. Drafts are never exported."
+msgstr "Stornierte Belege werden mit ihren ursprünglichen Zeilen und einer Storno-Buchung am selben Datum exportiert (GitLab #106). Gedacht für Bereinigungsläufe, z. B. eine Rechnung, die storniert und berichtigt statt gutgeschrieben wurde. Entwürfe werden nie exportiert."
+
 #: gaertnerei_berger/config/desktop.py:11
 msgid "GB DATEV"
 msgstr "GB DATEV"
@@ -146,6 +158,19 @@ msgstr "Fehler beim Anfügen der XML-Datei zu einem PDF-Druck für DATEV"
 #: gaertnerei_berger/gb_datev/report/datev/datev.js:15
 msgid "From Date"
 msgstr "Von Datum"
+
+#. Description of the 'Storno Rows' (Select) field in DocType 'DATEV
+#. Settings'
+#: gaertnerei_berger/gb_datev/doctype/datev_settings/datev_settings.json
+msgid "How Storno rows are written. generalumkehr: same Soll/Haben as the original, Generalumkehr (GU) = 1. swap_soll_haben: Soll/Haben swapped, GU empty. Agree with the Steuerberater."
+msgstr "Wie Storno-Zeilen geschrieben werden. generalumkehr: gleiches Soll/Haben wie das Original, Generalumkehr (GU) = 1. swap_soll_haben: Soll/Haben getauscht, GU leer. Mit dem Steuerberater abstimmen."
+
+#. Label of the include_cancelled (Check) field in DocType 'DATEV Export'
+#. Label of the include_cancelled (Check) field in DocType 'DATEV Settings'
+#: gaertnerei_berger/gb_datev/doctype/datev_export/datev_export.json
+#: gaertnerei_berger/gb_datev/doctype/datev_settings/datev_settings.json
+msgid "Include Cancelled Vouchers"
+msgstr "Stornierte Belege einbeziehen"
 
 #: gaertnerei_berger/gb_datev/doctype/datev_unternehmen_online_settings/datev_unternehmen_online_settings.py:58
 msgid "New {0} {1} sent by the GB DATEV integration."
@@ -198,6 +223,13 @@ msgstr "Beleg als PDF senden"
 #: gaertnerei_berger/gb_datev/doctype/datev_unternehmen_online_settings/datev_unternehmen_online_settings.json
 msgid "Sender"
 msgstr "Absender"
+
+#. Label of the storno_mode (Data) field in DocType 'DATEV Export'
+#. Label of the storno_mode (Select) field in DocType 'DATEV Settings'
+#: gaertnerei_berger/gb_datev/doctype/datev_export/datev_export.json
+#: gaertnerei_berger/gb_datev/doctype/datev_settings/datev_settings.json
+msgid "Storno Rows"
+msgstr "Storno-Zeilen"
 
 #. Name of a role
 #: gaertnerei_berger/gb_datev/doctype/datev_settings/datev_settings.json

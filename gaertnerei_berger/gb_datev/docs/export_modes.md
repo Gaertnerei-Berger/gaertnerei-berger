@@ -36,7 +36,32 @@ For **Payment Entry** and **Journal Entry**, Mapping owns **Konto / Gegenkonto /
 
 ## Voucher status
 
-The export includes only **submitted** vouchers (`docstatus = 1`). Draft and cancelled documents are excluded: cancelled GL entries (`is_cancelled = 1`) are filtered out; Sales/Purchase Invoice, Payment Entry, and Journal Entry queries require a submitted parent.
+By default the export includes only **submitted** vouchers (`docstatus = 1`). Cancelled GL entries (`is_cancelled = 1`) are filtered out; Sales/Purchase Invoice, Payment Entry, and Journal Entry queries require a submitted parent.
+
+**Drafts are never exported.** They have no GL Entries. A draft that is a real booking gets submitted with its (backdated) posting date and then exports normally.
+
+### Cancelled vouchers (GitLab #106)
+
+Two per-company DATEV Settings, section **Cancelled Vouchers**:
+
+| Setting | Values | Effect |
+|---------|--------|--------|
+| **Include Cancelled Vouchers** (`include_cancelled`) | off (default) / on | On: cancelled vouchers of every type export as their original rows plus a Storno |
+| **Storno Rows** (`storno_mode`) | `generalumkehr` (default) / `swap_soll_haben` | How the Storno is written |
+
+Meant for clean-up runs. Example: invoice A was sent, then cancelled in ERPNext instead of credited, and the amended A-1 was sent as the new invoice. The Steuerberater needs **A + Storno of A + A-1**; without the setting only A-1 is exported.
+
+How the export builds it:
+
+- A cancelled voucher's **original** GL rows go through the normal grouping, DATEV Mapping and Automatikkonto rules.
+- Each final row is followed by its Storno: same Umsatz, Konto, Gegenkonto, BU-Schlüssel, Belegdatum (the original's posting date) and Belegfeld 1; Buchungstext `Storno <voucher>`.
+  - `generalumkehr`: same Soll/Haben, **Generalumkehr (GU) = 1**
+  - `swap_soll_haben`: Soll/Haben swapped, GU empty
+- ERPNext's own reversal GL rows ("On cancellation of …") are never exported; the export writes its own Storno.
+- After a Repost Accounting Ledger, only the generation of rows that was active when the voucher was cancelled counts.
+- Each DATEV Export record keeps both values, so the log shows which exports included cancelled vouchers.
+
+Agree the Storno mark with the Steuerberater before the first run.
 
 ## Consultant Booking (`consultant_booking`)
 

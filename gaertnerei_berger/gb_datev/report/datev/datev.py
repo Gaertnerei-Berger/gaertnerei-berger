@@ -45,6 +45,12 @@ PAYMENT_LINES_PER_PAYMENT = "per_payment"
 PAYMENT_BELEGFELD_PAYMENT_ENTRY = "payment_entry"
 PAYMENT_BELEGFELD_INVOICE = "invoice"
 
+# DATEV Settings "Include Cancelled Vouchers" / "Storno Rows" (GitLab #106)
+STORNO_MODE_GENERALUMKEHR = "generalumkehr"
+STORNO_MODE_SWAP_SOLL_HABEN = "swap_soll_haben"
+# Remark ERPNext writes on the GL rows that reverse a voucher (make_reverse_gl_entries)
+ERPNEXT_REVERSAL_REMARK = "On cancellation of "
+
 UMSATZ_DECIMAL_COMMA = ","
 UMSATZ_DECIMAL_DOT = "."
 
@@ -220,6 +226,8 @@ def get_datev_export_filter_values(company):
 		"umsatz_decimal_separator": UMSATZ_DECIMAL_COMMA,
 		"payment_line_mode": settings.get("payment_line_mode") or PAYMENT_LINES_PER_INVOICE,
 		"payment_belegfeld_1": settings.get("payment_belegfeld_1") or PAYMENT_BELEGFELD_PAYMENT_ENTRY,
+		"include_cancelled": cint(settings.get("include_cancelled")),
+		"storno_mode": settings.get("storno_mode") or STORNO_MODE_GENERALUMKEHR,
 	}
 
 
@@ -247,7 +255,8 @@ def prepare_buchungsstapel_transactions(filters):
 	transactions = get_transactions(filters)
 	if is_gl_mirror_export(filters):
 		transactions = apply_buchungsstapel_mapping(transactions, filters)
-		return clear_automatic_account_bu_schluessel(transactions, filters)
+		transactions = clear_automatic_account_bu_schluessel(transactions, filters)
+		return add_storno_rows(transactions, filters)
 
 	transactions = group_sales_invoice_buchungsstapel(transactions, filters)
 	transactions = group_payment_entry_buchungsstapel(transactions, filters)
@@ -255,8 +264,42 @@ def prepare_buchungsstapel_transactions(filters):
 	transactions = apply_buchungsstapel_mapping(transactions, filters)
 	# After mapping: mapping finds the voucher by Belegfeld 1
 	transactions = apply_payment_entry_belegfeld_1(transactions, filters)
-	# Last, so neither grouping nor a DATEV Mapping can bring the BU back
-	return clear_automatic_account_bu_schluessel(transactions, filters)
+	# After grouping and mapping, so neither can bring the BU back
+	transactions = clear_automatic_account_bu_schluessel(transactions, filters)
+	# Last: a Storno mirrors the original's final row
+	return add_storno_rows(transactions, filters)
+
+
+def add_storno_rows(transactions, filters):
+	"""
+	Follow each row of a cancelled voucher with its Storno (GitLab #106).
+
+	The Storno keeps the original's date, accounts, BU and Belegfeld 1.
+	generalumkehr keeps Soll/Haben and sets Generalumkehr (GU) = 1;
+	swap_soll_haben swaps Soll/Haben instead. Rows only carry the cancelled
+	flag when DATEV Settings include cancelled vouchers.
+	"""
+	if not filters.get("include_cancelled"):
+		return transactions
+
+	result = []
+	for row in transactions:
+		result.append(row)
+		if row.get("_datev_cancelled"):
+			result.append(make_storno_row(row, filters.get("storno_mode")))
+
+	return result
+
+
+def make_storno_row(row, storno_mode):
+	storno = dict(row)
+	voucher_no = row.get("Beleginfo - Inhalt 1") or row.get("Belegfeld 1")
+	storno["Buchungstext"] = "Storno {}".format(voucher_no)[:60]
+	if storno_mode == STORNO_MODE_SWAP_SOLL_HABEN:
+		storno["Soll/Haben-Kennzeichen"] = "H" if row.get("Soll/Haben-Kennzeichen") == "S" else "S"
+	else:
+		storno["Generalumkehr (GU)"] = "1"
+	return storno
 
 
 def clear_automatic_account_bu_schluessel(transactions, filters):
@@ -436,6 +479,8 @@ def create_datev_export(company, from_date, to_date, voucher_type=None, remarks=
 			"voucher_type": voucher_type or "",
 			"export_mode": settings.get("buchungsstapel_export_mode"),
 			"invoice_amount_basis": settings.get("invoice_amount_basis"),
+			"include_cancelled": settings.get("include_cancelled"),
+			"storno_mode": settings.get("storno_mode") if settings.get("include_cancelled") else "",
 			"status": "Generated",
 		}
 	)
@@ -537,7 +582,93 @@ def get_transactions(filters, as_dict=1):
 		filters["exclude_voucher_types"] = type_map.keys()
 		transactions.extend(run(params_method=get_generic_params, filters=filters))
 
+	if filters.get("include_cancelled") and as_dict:
+		transactions = filter_cancelled_voucher_rows(transactions)
+
 	return sorted(transactions, key=sort_by)
+
+
+def filter_cancelled_voucher_rows(transactions):
+	"""
+	Keep what a cancelled voucher booked before it was cancelled (GitLab #106).
+
+	With "Include Cancelled Vouchers" the query also returns flagged and
+	reversal GL rows. Per voucher:
+	- submitted: rows with is_cancelled = 0, as without the setting
+	- cancelled: its last generation of original rows, flagged for the Storno.
+	  ERPNext's reversal rows are dropped; the export writes its own Storno.
+	  A Repost Accounting Ledger before the cancel leaves older generations,
+	  each followed by its reversal, so only originals newer than the last
+	  reversal before them count.
+	"""
+	rows_by_voucher = {}
+	for row in transactions:
+		key = (row.get("Beleginfo - Art 1"), row.get("Beleginfo - Inhalt 1"))
+		rows_by_voucher.setdefault(key, []).append(row)
+
+	docstatus_by_voucher = get_voucher_docstatus(rows_by_voucher)
+
+	result = []
+	for voucher_key, rows in rows_by_voucher.items():
+		# A voucher that no longer exists keeps the behaviour without the setting
+		docstatus = docstatus_by_voucher.get(voucher_key, 1)
+
+		if docstatus == 1:
+			result.extend(row for row in rows if not cint(row.get("_datev_gl_is_cancelled")))
+		elif docstatus == 2:
+			result.extend(get_cancelled_voucher_original_rows(rows))
+
+	return result
+
+
+def get_voucher_docstatus(voucher_keys):
+	"""docstatus per (voucher_type, voucher_no), one query per voucher type."""
+	names_by_type = {}
+	for voucher_type, voucher_no in voucher_keys:
+		if voucher_type and voucher_no:
+			names_by_type.setdefault(voucher_type, []).append(voucher_no)
+
+	docstatus_by_voucher = {}
+	for voucher_type, names in names_by_type.items():
+		# GL rows of an uninstalled app's doctype: keep the behaviour without the setting
+		if not frappe.db.exists("DocType", voucher_type):
+			continue
+
+		for voucher in frappe.get_all(
+			voucher_type, filters={"name": ["in", names]}, fields=["name", "docstatus"]
+		):
+			docstatus_by_voucher[(voucher_type, voucher.name)] = cint(voucher.docstatus)
+
+	return docstatus_by_voucher
+
+
+def get_cancelled_voucher_original_rows(rows):
+	originals = [row for row in rows if not row.get("_datev_gl_reversal")]
+	if not originals:
+		return []
+
+	latest_original = max(row.get("_datev_gl_creation") for row in originals)
+	earlier_reversals = [
+		row.get("_datev_gl_creation")
+		for row in rows
+		if row.get("_datev_gl_reversal") and row.get("_datev_gl_creation") < latest_original
+	]
+	if earlier_reversals:
+		last_reversal = max(earlier_reversals)
+		originals = [row for row in originals if row.get("_datev_gl_creation") > last_reversal]
+
+	for row in originals:
+		row["_datev_cancelled"] = True
+
+	return originals
+
+
+def get_voucher_docstatus_filter(alias, filters):
+	"""Submitted vouchers; with "Include Cancelled Vouchers" also cancelled ones."""
+	if filters.get("include_cancelled"):
+		return "AND {}.docstatus IN (1, 2)".format(alias)
+
+	return "AND {}.docstatus = 1".format(alias)
 
 
 def group_sales_invoice_buchungsstapel(transactions, filters):
@@ -1615,8 +1746,8 @@ def get_payment_entry_params(filters):
 
 	extra_filters = """
 		AND gl.voucher_type = 'Payment Entry'
-		AND pe.docstatus = 1
-	"""
+		{docstatus_filter}
+	""".format(docstatus_filter=get_voucher_docstatus_filter("pe", filters))
 
 	return extra_fields, extra_joins, extra_filters
 
@@ -1637,8 +1768,8 @@ def get_sales_invoice_params(filters):
 
 	extra_filters = """
 		AND gl.voucher_type = 'Sales Invoice'
-		AND si.docstatus = 1
-	"""
+		{docstatus_filter}
+	""".format(docstatus_filter=get_voucher_docstatus_filter("si", filters))
 
 	return extra_fields, extra_joins, extra_filters
 
@@ -1659,8 +1790,8 @@ def get_purchase_invoice_params(filters):
 
 	extra_filters = """
 		AND gl.voucher_type = 'Purchase Invoice'
-		AND pi.docstatus = 1
-	"""
+		{docstatus_filter}
+	""".format(docstatus_filter=get_voucher_docstatus_filter("pi", filters))
 
 	return extra_fields, extra_joins, extra_filters
 
@@ -1681,8 +1812,8 @@ def get_journal_entry_params(filters):
 
 	extra_filters = """
 		AND gl.voucher_type = 'Journal Entry'
-		AND je.docstatus = 1
-	"""
+		{docstatus_filter}
+	""".format(docstatus_filter=get_voucher_docstatus_filter("je", filters))
 
 	return extra_fields, extra_joins, extra_filters
 
@@ -1722,6 +1853,7 @@ def run_query(filters, extra_fields, extra_joins, extra_filters, as_dict=1):
 	as_dict -- return as list of dicts [0,1]
 	"""
 	ensure_datev_query_filter_defaults(filters)
+	cancelled_fields, cancelled_filter = get_cancelled_query_parts(filters)
 	query = """
 		SELECT
 
@@ -1752,6 +1884,7 @@ def run_query(filters, extra_fields, extra_joins, extra_filters, as_dict=1):
 			case gl.party_type when 'Customer' then 'Debitorennummer' when 'Supplier' then 'Kreditorennummer' else NULL end as 'Beleginfo - Art 4',
 			par.debtor_creditor_number as 'Beleginfo - Inhalt 4'
 
+			{cancelled_fields}
 			{extra_fields}
 
 		FROM `tabGL Entry` gl
@@ -1770,17 +1903,39 @@ def run_query(filters, extra_fields, extra_joins, extra_filters, as_dict=1):
 		WHERE gl.company = %(company)s
 		AND DATE(gl.posting_date) >= %(from_date)s
 		AND DATE(gl.posting_date) <= %(to_date)s
-		AND IFNULL(gl.is_cancelled, 0) = 0
+		{cancelled_filter}
 
 		{extra_filters}
 
 		ORDER BY 'Belegdatum', gl.voucher_no""".format(
-		extra_fields=extra_fields, extra_joins=extra_joins, extra_filters=extra_filters
+		cancelled_fields=cancelled_fields,
+		cancelled_filter=cancelled_filter,
+		extra_fields=extra_fields,
+		extra_joins=extra_joins,
+		extra_filters=extra_filters,
 	)
 
 	gl_entries = frappe.db.sql(query, filters, as_dict=as_dict)
 
 	return gl_entries
+
+
+def get_cancelled_query_parts(filters):
+	"""
+	Without "Include Cancelled Vouchers" cancelled GL rows stay out in SQL.
+
+	With it, all rows come back with what filter_cancelled_voucher_rows needs
+	to pick a cancelled voucher's originals.
+	"""
+	if not filters.get("include_cancelled"):
+		return "", "AND IFNULL(gl.is_cancelled, 0) = 0"
+
+	fields = """
+			, IFNULL(gl.is_cancelled, 0) as '_datev_gl_is_cancelled'
+			, IFNULL(gl.remarks, '') = CONCAT('{remark}', gl.voucher_no) as '_datev_gl_reversal'
+			, gl.creation as '_datev_gl_creation'
+	""".format(remark=ERPNEXT_REVERSAL_REMARK)
+	return fields, ""
 
 
 def apply_buchungsstapel_mapping(transactions, filters):
