@@ -5,7 +5,7 @@
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
-  "field_order": [
+ "field_order": [
   "client",
   "client_number",
   "column_break_2",
@@ -25,7 +25,11 @@
   "section_break_payment_lines",
   "payment_line_mode",
   "column_break_payment_lines",
-  "payment_belegfeld_1"
+  "payment_belegfeld_1",
+  "section_break_cancelled",
+  "include_cancelled",
+  "column_break_cancelled",
+  "storno_mode"
  ],
  "fields": [
   {
@@ -156,6 +160,31 @@
    "fieldtype": "Select",
    "label": "Belegfeld 1 on Payment Lines",
    "options": "payment_entry\ninvoice"
+  },
+  {
+   "fieldname": "section_break_cancelled",
+   "fieldtype": "Section Break",
+   "label": "Cancelled Vouchers"
+  },
+  {
+   "default": "0",
+   "description": "Export cancelled vouchers as their original rows plus a Storno on the same date (GitLab #106). Meant for clean-up runs, e.g. an invoice that was cancelled and amended instead of credited. Drafts are never exported.",
+   "fieldname": "include_cancelled",
+   "fieldtype": "Check",
+   "label": "Include Cancelled Vouchers"
+  },
+  {
+   "fieldname": "column_break_cancelled",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "generalumkehr",
+   "depends_on": "include_cancelled",
+   "description": "How Storno rows are written. generalumkehr: same Soll/Haben as the original, Generalumkehr (GU) = 1. swap_soll_haben: Soll/Haben swapped, GU empty. Agree with the Steuerberater.",
+   "fieldname": "storno_mode",
+   "fieldtype": "Select",
+   "label": "Storno Rows",
+   "options": "generalumkehr\nswap_soll_haben"
   }
  ],
  "grid_page_length": 50,
