@@ -178,6 +178,10 @@ msgstr ""
 msgid "Recipient"
 msgstr "Empfänger"
 
+#. Description of the custom field 'Tax Category Type' (Select) on Tax Category
+msgid "Sales: only offered on sales forms. Purchase: only on purchase forms. Empty: offered on both."
+msgstr "Vertrieb: nur in Verkaufsformularen angeboten. Einkauf: nur in Einkaufsformularen. Leer: in beiden."
+
 #. Description of the 'Attach Files' (Check) field in DocType 'DATEV Voucher
 #. Config'
 #: gaertnerei_berger/gb_datev/doctype/datev_voucher_config/datev_voucher_config.json
@@ -200,6 +204,10 @@ msgstr "Absender"
 #: gaertnerei_berger/gb_datev/doctype/datev_unternehmen_online_settings/datev_unternehmen_online_settings.json
 msgid "System Manager"
 msgstr ""
+
+#. Label of the custom field 'Tax Category Type' (Select) on Tax Category
+msgid "Tax Category Type"
+msgstr "Steuerkategorie-Typ"
 
 #. Label of a Data field in DocType 'DATEV Settings'
 #: gaertnerei_berger/gb_datev/doctype/datev_settings/datev_settings.json

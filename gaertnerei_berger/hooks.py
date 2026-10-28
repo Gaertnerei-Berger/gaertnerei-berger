@@ -50,6 +50,7 @@ fixtures = [
 					"Sales Invoice Item-custom_datev_account_no",
 					"Sales Invoice Item-custom_bu_schlussel",
 					"Sales Invoice Item-datev_settings_end_section",
+					"Tax Category-custom_tax_category_type",
 				],
 			]
 		],
@@ -77,8 +78,32 @@ fixtures = [
 # include js in page
 # page_js = {"page" : "public/js/file.js"}
 
+TAX_CATEGORY_FILTER_JS = "public/js/tax_category_filter.js"
+
 # include js in doctype views
-doctype_js = {"Journal Entry": "public/js/journal_entry.js"}
+doctype_js = {
+	"Journal Entry": "public/js/journal_entry.js",
+	**{
+		doctype: TAX_CATEGORY_FILTER_JS
+		for doctype in (
+			"Quotation",
+			"Sales Order",
+			"Delivery Note",
+			"Sales Invoice",
+			"POS Invoice",
+			"POS Profile",
+			"Customer",
+			"Sales Taxes and Charges Template",
+			"Supplier Quotation",
+			"Purchase Order",
+			"Purchase Receipt",
+			"Purchase Invoice",
+			"Supplier",
+			"Purchase Taxes and Charges Template",
+			"Tax Rule",
+		)
+	},
+}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
