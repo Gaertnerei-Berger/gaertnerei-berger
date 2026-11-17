@@ -16,7 +16,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "Configuration",
-   "link_count": 3,
+   "link_count": 4,
    "onboard": 0,
    "type": "Card Break"
   },
@@ -46,6 +46,16 @@
    "label": "DATEV Unternehmen Online Settings",
    "link_count": 0,
    "link_to": "DATEV Unternehmen Online Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Gaertnerei Berger Settings",
+   "link_count": 0,
+   "link_to": "Gaertnerei Berger Settings",
    "link_type": "DocType",
    "onboard": 0,
    "type": "Link"
