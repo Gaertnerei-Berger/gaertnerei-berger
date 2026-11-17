@@ -262,6 +262,7 @@ def prepare_buchungsstapel_transactions(filters):
 	transactions = group_payment_entry_buchungsstapel(transactions, filters)
 	transactions = group_journal_entry_buchungsstapel(transactions, filters)
 	transactions = apply_buchungsstapel_mapping(transactions, filters)
+	transactions = keep_soll_haben_with_personenkonto(transactions)
 	# After mapping: mapping finds the voucher by Belegfeld 1
 	transactions = apply_payment_entry_belegfeld_1(transactions, filters)
 	# After grouping and mapping, so neither can bring the BU back
@@ -295,11 +296,38 @@ def make_storno_row(row, storno_mode):
 	storno = dict(row)
 	voucher_no = row.get("Beleginfo - Inhalt 1") or row.get("Belegfeld 1")
 	storno["Buchungstext"] = "Storno {}".format(voucher_no)[:60]
+	# A Storno is no new open item; DATEV rejects a Fälligkeit on it (GitLab #97)
+	storno["Fälligkeit"] = None
 	if storno_mode == STORNO_MODE_SWAP_SOLL_HABEN:
 		storno["Soll/Haben-Kennzeichen"] = "H" if row.get("Soll/Haben-Kennzeichen") == "S" else "S"
 	else:
 		storno["Generalumkehr (GU)"] = "1"
 	return storno
+
+
+def keep_soll_haben_with_personenkonto(transactions):
+	"""
+	Flip S/H on rows where DATEV Mapping moved the Personenkonto to the other column.
+
+	S/H refers to Konto (DATEV field #2). Grouping sets it for the column it put
+	the Debitor/Kreditor in (`_datev_party_column`). A Mapping that swaps Konto and
+	Gegenkonto keeps the booking only if S/H flips along; otherwise DATEV books the
+	invoice as a Gutschrift (GitLab #97).
+	"""
+	for row in transactions:
+		party_no = cstr(row.get("_datev_party_no"))
+		party_column = row.get("_datev_party_column")
+		if not party_no or party_column not in ACCOUNT_MAP_COLUMNS:
+			continue
+
+		other_column = next(column for column in ACCOUNT_MAP_COLUMNS if column != party_column)
+		if cstr(row.get(party_column)) == party_no or cstr(row.get(other_column)) != party_no:
+			continue
+
+		row["Soll/Haben-Kennzeichen"] = "H" if row.get("Soll/Haben-Kennzeichen") == "S" else "S"
+		row["_datev_party_column"] = other_column
+
+	return transactions
 
 
 def clear_automatic_account_bu_schluessel(transactions, filters):
@@ -707,12 +735,12 @@ def get_grouped_invoice_rows(voucher_type, voucher_no, voucher_rows, filters):
 		return voucher_rows
 
 	base_row = get_invoice_base_row(voucher_rows)
-	gegenkonto = get_invoice_gegenkonto(voucher_type, voucher_doc, base_row, filters)
+	party_konto = get_invoice_party_konto(voucher_type, voucher_doc, base_row, filters)
 	grouped_rows = {}
 
 	for item in voucher_doc.get("items") or []:
-		konto = get_invoice_item_konto(voucher_type, item, filters.get("company"))
-		if not konto:
+		item_konto = get_invoice_item_konto(voucher_type, item, filters.get("company"))
+		if not item_konto:
 			continue
 
 		amount = get_invoice_item_amount(item, filters)
@@ -721,14 +749,14 @@ def get_grouped_invoice_rows(voucher_type, voucher_no, voucher_rows, filters):
 
 		bu_schluessel = item.get("custom_bu_schlussel") or ""
 		tax_grouping_key = get_invoice_item_tax_grouping_key(item)
-		group_key = (konto, tax_grouping_key)
+		group_key = (item_konto, tax_grouping_key)
 
 		if group_key not in grouped_rows:
 			grouped_rows[group_key] = make_grouped_invoice_row(
 				voucher_type=voucher_type,
 				base_row=base_row,
-				konto=konto,
-				gegenkonto=gegenkonto,
+				party_konto=party_konto,
+				item_konto=item_konto,
 				bu_schluessel=bu_schluessel,
 				amount=amount,
 			)
@@ -743,7 +771,7 @@ def get_grouped_invoice_rows(voucher_type, voucher_no, voucher_rows, filters):
 
 	if grouped_rows:
 		rows = list(grouped_rows.values())
-		rows.extend(get_invoice_settlement_rows(voucher_type, voucher_doc, base_row, gegenkonto, filters))
+		rows.extend(get_invoice_settlement_rows(voucher_type, voucher_doc, base_row, party_konto, filters))
 		return rows
 
 	return voucher_rows
@@ -757,7 +785,8 @@ def get_invoice_base_row(voucher_rows):
 	return dict(voucher_rows[0])
 
 
-def get_invoice_gegenkonto(voucher_type, voucher_doc, base_row, filters):
+def get_invoice_party_konto(voucher_type, voucher_doc, base_row, filters):
+	"""Debitor/Kreditor number of the invoice party (DATEV Konto on invoice rows)."""
 	if voucher_type == "Sales Invoice":
 		return get_party_account_number(
 			party_type="Customer",
@@ -884,13 +913,23 @@ def normalize_invoice_grouping_value(value):
 	return str(value)
 
 
-def make_grouped_invoice_row(voucher_type, base_row, konto, gegenkonto, bu_schluessel, amount):
+def make_grouped_invoice_row(voucher_type, base_row, party_konto, item_konto, bu_schluessel, amount):
+	"""
+	Invoice row in DATEV orientation: Personenkonto on Konto, item account on Gegenkonto.
+
+	S/H refers to Konto (DATEV field #2), so the Debitor is Soll and the
+	Kreditor Haben on a normal invoice (GitLab #97). The BU-Schlüssel belongs
+	to the Gegenkonto, where the Erlös/Aufwand account is.
+	"""
 	row = dict(base_row)
 	row["Umsatz (ohne Soll/Haben-Kz)"] = abs(amount)
 	row["Soll/Haben-Kennzeichen"] = get_grouped_invoice_amount_indicator(voucher_type, amount)
-	row["Konto"] = konto
-	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
+	row["Konto"] = party_konto
+	row["Gegenkonto (ohne BU-Schlüssel)"] = item_konto
 	row["BU-Schlüssel"] = bu_schluessel
+	row["_datev_invoice_row"] = True
+	row["_datev_party_no"] = party_konto
+	row["_datev_party_column"] = "Konto"
 	return row
 
 
@@ -955,10 +994,11 @@ def make_invoice_settlement_row(base_row, konto, gegenkonto, amount, bu_schluess
 
 
 def get_grouped_invoice_amount_indicator(voucher_type, amount):
+	"""S/H for the Personenkonto on Konto; negative amounts (returns) flip."""
 	if voucher_type == "Purchase Invoice":
-		return "S" if amount >= 0 else "H"
+		return "H" if amount >= 0 else "S"
 
-	return "H" if amount >= 0 else "S"
+	return "S" if amount >= 0 else "H"
 
 
 def get_party_first_amount_indicator(direction, amount):
@@ -1241,7 +1281,8 @@ def get_grouped_journal_entry_rows(voucher_no, voucher_rows, filters):
 		if not business_no:
 			return voucher_rows
 
-		# SI/PI orientation: Konto = business (Erlös/Aufwand), Gegenkonto = party
+		# Erlös/Aufwand on Konto, party on Gegenkonto; invoices use the mirrored
+		# layout, the booking is the same (GitLab #97)
 		konto, gegenkonto = business_no, party_no
 		export_amount = get_journal_entry_export_amount(
 			business_row, tax_row, filters, voucher_doc.company
@@ -1255,6 +1296,8 @@ def get_grouped_journal_entry_rows(voucher_no, voucher_rows, filters):
 		grouped_row["Konto"] = konto
 		grouped_row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
 		grouped_row["BU-Schlüssel"] = get_business_row_bu_schluessel(business_row, tax_row)
+		grouped_row["_datev_party_no"] = party_no
+		grouped_row["_datev_party_column"] = "Gegenkonto (ohne BU-Schlüssel)"
 		grouped_rows.append(grouped_row)
 
 	return merge_journal_entry_datev_rows(grouped_rows)
@@ -1758,7 +1801,8 @@ def get_sales_invoice_params(filters):
 		, '' as 'Beleginfo - Inhalt 5'
 		, '' as 'Beleginfo - Art 6'
 		, '' as 'Beleginfo - Inhalt 6'
-		, si.due_date as 'Fälligkeit'
+		-- DATEV allows no Fälligkeit on a Gutschrift (REW02890, GitLab #97)
+		, CASE WHEN si.is_return = 1 THEN NULL ELSE si.due_date END as 'Fälligkeit'
 	"""
 
 	extra_joins = """
@@ -1780,7 +1824,8 @@ def get_purchase_invoice_params(filters):
 		, pi.bill_no as 'Beleginfo - Inhalt 5'
 		, 'Lieferanten-Rechnungsdatum' as 'Beleginfo - Art 6'
 		, pi.bill_date as 'Beleginfo - Inhalt 6'
-		, pi.due_date as 'Fälligkeit'
+		-- DATEV allows no Fälligkeit on a Gutschrift (REW02890, GitLab #97)
+		, CASE WHEN pi.is_return = 1 THEN NULL ELSE pi.due_date END as 'Fälligkeit'
 	"""
 
 	extra_joins = """
@@ -2010,6 +2055,10 @@ def apply_buchungsstapel_mapping(transactions, filters):
 			if not target_column:
 				continue
 
+			if target_column == "Fälligkeit" and cint(voucher_doc.get("is_return")):
+				# DATEV allows no Fälligkeit on a Gutschrift (REW02890, GitLab #97)
+				continue
+
 			value = resolve_map_to_value(
 				voucher_doc=voucher_doc,
 				map_to_field=mapping.get("map_to_field"),
@@ -2088,23 +2137,22 @@ def get_mapping_target_column(row, map_to_column):
 	"""
 	Column a mapping writes to on this row, or None to skip it.
 
-	Settlement rows (Is Paid, write-off) keep their own Kasse/Bank/write-off
-	account, BU and Umsatz. The invoice's Kreditor mapping (Gegenkonto on PI
-	rows) lands on their Konto, so payment and invoice use the same Kreditor.
+	Grouped invoice rows keep the accounts grouping set (Personenkonto on Konto,
+	item account on Gegenkonto). A Mapping that moved one of them would not
+	move S/H along, and DATEV would read the invoice as a Gutschrift (GitLab #97).
+
+	Settlement rows (Is Paid, write-off) keep their own accounts, BU and Umsatz.
 	"""
 	if row.get("_datev_payment_line") and map_to_column == "Umsatz (ohne Soll/Haben-Kz)":
 		# Per-invoice payment line keeps its allocated amount, not paid_amount
 		return None
 
-	if not row.get("_datev_settlement_row"):
-		return map_to_column
+	if row.get("_datev_invoice_row") and map_to_column in ACCOUNT_MAP_COLUMNS:
+		return None
 
-	# Purchase orientation only; Sales Invoice POS rows (GitLab #99) carry the
-	# Debitor on Gegenkonto and would need their own rule here.
-	if map_to_column == "Gegenkonto (ohne BU-Schlüssel)":
-		return "Konto"
-
-	if map_to_column in {"Konto", "BU-Schlüssel", "Umsatz (ohne Soll/Haben-Kz)"}:
+	if row.get("_datev_settlement_row") and map_to_column in (
+		ACCOUNT_MAP_COLUMNS | {"BU-Schlüssel", "Umsatz (ohne Soll/Haben-Kz)"}
+	):
 		return None
 
 	return map_to_column

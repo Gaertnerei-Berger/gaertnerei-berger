@@ -4,8 +4,8 @@ Frozen orientation for **Consultant Booking**. Do not change without a new grill
 
 | Voucher | Konto | Gegenkonto | S/H | BU |
 |---------|-------|------------|-----|-----|
-| Sales Invoice | Erlöskonto | Debitor | H | item `custom_bu_schlussel` |
-| Purchase Invoice | Aufwand | Kreditor | S | item BU |
+| Sales Invoice | Debitor | Erlöskonto | S | item `custom_bu_schlussel` |
+| Purchase Invoice | Kreditor | Aufwand | H | item BU |
 | Purchase Invoice – Is Paid payment | Kreditor | Kasse/Bank | S | Settings pay BU |
 | Purchase Invoice – write-off | Kreditor | Write-off account | S | blank (Steuerberater review) |
 | Payment Entry Receive | Bank | Personenkonto | S | Settings receive BU (via Mapping) |
@@ -14,9 +14,11 @@ Frozen orientation for **Consultant Booking**. Do not change without a new grill
 | Journal Entry purchase | Aufwand | Kreditor | S | business-row BU |
 | Journal Entry transfer (no party) | Soll-Konto | Haben-Konto | S | blank |
 
+S/H always refers to Konto (DATEV field #2). Invoices put the Personenkonto on Konto and the Erlös/Aufwand account (with its BU) on Gegenkonto, as DATEV and the customer's earlier export do (GitLab #68, #97). Journal Entries keep Erlös/Aufwand on Konto; both layouts book the same. If a DATEV Mapping moves the Personenkonto of a grouped row to the other column, S/H flips with it.
+
 Ownership:
 
-- **SI/PI:** grouping owns Konto/Gegenkonto/BU/Umsatz; Mapping is metadata (Both).
+- **SI/PI:** grouping owns Konto/Gegenkonto/BU/Umsatz; Mapping is metadata (Both). Account, BU and Umsatz rows in an SI/PI Mapping are ignored. Returns flip S/H and export no Fälligkeit: DATEV refuses a due date on a Gutschrift (REW02890).
 - **PI settlement rows:** ERPNext posts Is Paid payments and write-offs on the invoice itself; grouping emits them as extra rows (`base_paid_amount` / `base_write_off_amount`, same Belegfeld 1 as the invoice). Negative amounts (paid returns) flip to H.
 - **PE/JE:** Mapping owns Konto/Gegenkonto/BU; PE uses `custom_datev_*` (party = Personenkonto). Grouping collapses rows and sets S/H (+ JE Umsatz).
 - **PE for several invoices:** one line per allocated invoice / credit note (credit notes flip to H), or one net line, per DATEV Settings **Lines per Payment**. **Belegfeld 1 on Payment Lines** can put the invoice number in Belegfeld 1 for OPOS matching. See [export_modes.md](export_modes.md#payment-lines).

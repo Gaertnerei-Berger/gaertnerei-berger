@@ -249,7 +249,7 @@ class TestTaxCategoryBuRouting(FrappeTestCase):
 
 		self.assertEqual(len(sales_rows), 1)
 		self.assertEqual(sales_rows[0]["BU-Schlüssel"], "9")
-		self.assertEqual(sales_rows[0]["Konto"], "8400")
+		self.assertEqual(sales_rows[0]["Gegenkonto (ohne BU-Schlüssel)"], "8400")
 
 		purchase_base_row = dict(base_row)
 		purchase_base_row.update(
@@ -275,7 +275,7 @@ class TestTaxCategoryBuRouting(FrappeTestCase):
 
 		self.assertEqual(len(purchase_rows), 1)
 		self.assertEqual(purchase_rows[0]["BU-Schlüssel"], "8")
-		self.assertEqual(purchase_rows[0]["Konto"], "3400")
+		self.assertEqual(purchase_rows[0]["Gegenkonto (ohne BU-Schlüssel)"], "3400")
 
 	def test_journal_entry_bu_resolves_from_unique_tax_account_mapping(self):
 		mapping = build_item_tax_template_bu_schluessel_by_account()
