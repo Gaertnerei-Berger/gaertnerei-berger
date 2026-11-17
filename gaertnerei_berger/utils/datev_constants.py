@@ -186,6 +186,18 @@ TRANSACTION_COLUMNS = [
 	"Steuersatz",
 	# Beispiel: DE für Deutschland
 	"Land",
+	# Fields 121-125 were added in format versions 11 (Jan 2021), 12 (Jun 2021)
+	# and 13 (Feb 2024). Headings as in DATEV's Musterdaten.
+	# Abrechnungsreferenz (e.g. a settlement or payout ID of a payment provider)
+	"Abrechnungsreferenz",
+	# Betriebsvermögensvergleich-Position (only for Gesellschafter-Buchungen)
+	"BVV-Position",
+	# EU-Land and USt-IdNr. of the country the goods ship from (OSS)
+	"EU-Land u. UStID (Ursprung)",
+	# Tax rate of that country, format 99,99
+	"EU-Steuersatz (Ursprung)",
+	# Expense account for Skonto instead of the collective Skonto account
+	"Abw. Skontokonto",
 ]
 
 DEBTOR_CREDITOR_COLUMNS = [
@@ -481,7 +493,8 @@ class FormatName:
 class Transactions:
 	DATA_CATEGORY = DataCategory.TRANSACTIONS
 	FORMAT_NAME = FormatName.TRANSACTIONS
-	FORMAT_VERSION = "9"
+	# Must match the number of COLUMNS: version 13 has 125 fields.
+	FORMAT_VERSION = "13"
 	COLUMNS = TRANSACTION_COLUMNS
 
 
