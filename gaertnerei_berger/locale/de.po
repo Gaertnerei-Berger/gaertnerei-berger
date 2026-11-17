@@ -275,3 +275,115 @@ msgstr "Wird als Gegenkontonummer für Eröffnungsbuchungen verwendet"
 #: gaertnerei_berger/gb_datev/doctype/datev_unternehmen_online_settings/datev_unternehmen_online_settings.py:50
 msgid "{} was not sent to DATEV because no attachments have been found."
 msgstr "{} wurde nicht an DATEV gesendet weil keine Anhänge gefunden wurden."
+
+#. Name of a DocType
+msgid "Gaertnerei Berger Settings"
+msgstr "Gärtnerei Berger Einstellungen"
+
+#. Label of a Section Break field in DocType 'Gaertnerei Berger Settings'
+msgid "One-time Data Operations"
+msgstr "Einmalige Datenoperationen"
+
+#. Label of a Button field in DocType 'Gaertnerei Berger Settings'
+msgid "Run once: Fill DATEV fields on Sales Invoices"
+msgstr "Einmalig ausführen: DATEV-Felder in Ausgangsrechnungen befüllen"
+
+#. Label of a Check field in DocType 'Gaertnerei Berger Settings'
+msgid "Sales Invoice DATEV Backfill Executed"
+msgstr "DATEV-Befüllung Ausgangsrechnungen ausgeführt"
+
+#. Label of a Datetime field in DocType 'Gaertnerei Berger Settings'
+msgid "Executed On"
+msgstr "Ausgeführt am"
+
+#. Label of a Link field in DocType 'Gaertnerei Berger Settings'
+msgid "Executed By"
+msgstr "Ausgeführt von"
+
+#. Label of a Small Text field in DocType 'Gaertnerei Berger Settings'
+msgid "Result"
+msgstr "Ergebnis"
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.py
+msgid "This one-time operation has already been executed on {0} by {1}."
+msgstr "Diese einmalige Operation wurde bereits am {0} von {1} ausgeführt."
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.py
+msgid "Sales Invoice: Account No"
+msgstr "Ausgangsrechnung: Kontonummer"
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.py
+msgid "Sales Invoice Item: Account No"
+msgstr "Ausgangsrechnungsposition: Kontonummer"
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.py
+msgid "Sales Invoice Item: BU-Schlüssel"
+msgstr "Ausgangsrechnungsposition: BU-Schlüssel"
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.js
+msgid "Already executed (one-time operation)"
+msgstr "Bereits ausgeführt (einmalige Operation)"
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.js
+msgid "Sales Invoice DATEV backfill was executed on {0} by {1}. This operation cannot be run again."
+msgstr "Die DATEV-Befüllung der Ausgangsrechnungen wurde am {0} von {1} ausgeführt. Diese Operation kann nicht erneut ausgeführt werden."
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.js
+msgid "One-time operation pending: DATEV fields on Sales Invoices have not been filled yet."
+msgstr "Einmalige Operation ausstehend: Die DATEV-Felder der Ausgangsrechnungen wurden noch nicht befüllt."
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.js
+msgid "<p><b>This is a one-time operation.</b> It can be executed only once and cannot be undone.</p><p>It fills empty DATEV fields (Account No, BU-Schlüssel) on all Sales Invoices. Existing values are kept. No timestamps, amounts, taxes or GL entries are changed.</p><p>Do you want to run it now?</p>"
+msgstr "<p><b>Dies ist eine einmalige Operation.</b> Sie kann nur ein einziges Mal ausgeführt und nicht rückgängig gemacht werden.</p><p>Sie befüllt leere DATEV-Felder (Kontonummer, BU-Schlüssel) in allen Ausgangsrechnungen. Vorhandene Werte bleiben erhalten. Zeitstempel, Beträge, Steuern und Hauptbucheinträge werden nicht verändert.</p><p>Möchten Sie sie jetzt ausführen?</p>"
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.js
+msgid "Filling DATEV fields on Sales Invoices..."
+msgstr "DATEV-Felder in Ausgangsrechnungen werden befüllt..."
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.js
+msgid "DATEV fields filled"
+msgstr "DATEV-Felder befüllt"
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.py
+msgid "Cannot run the DATEV backfill. Missing columns: {0}. Run bench migrate first."
+msgstr "Die DATEV-Befüllung kann nicht ausgeführt werden. Fehlende Spalten: {0}. Bitte zuerst bench migrate ausführen."
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.js
+msgid "Fill DATEV fields on Sales Invoices"
+msgstr "DATEV-Felder in Ausgangsrechnungen befüllen"
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.js
+msgid "Fills the empty DATEV fields of all existing Sales Invoices from their current sources: Account No (from Debit To), item Account No (from Income Account) and item BU-Schlüssel (from Item Tax Template)."
+msgstr "Befüllt die leeren DATEV-Felder aller vorhandenen Ausgangsrechnungen aus ihren aktuellen Quellen: Kontonummer (aus Forderungskonto), Positions-Kontonummer (aus Erlöskonto) und Positions-BU-Schlüssel (aus Artikelsteuervorlage)."
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.js
+msgid "This is a one-time operation. It can be executed only once and cannot be undone."
+msgstr "Dies ist eine einmalige Operation. Sie kann nur ein einziges Mal ausgeführt und nicht rückgängig gemacht werden."
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.js
+msgid "Only empty fields are filled. Existing values are kept."
+msgstr "Nur leere Felder werden befüllt. Vorhandene Werte bleiben erhalten."
+
+#: gaertnerei_berger/gaertnerei_berger/doctype/gaertnerei_berger_settings/gaertnerei_berger_settings.js
+msgid "No timestamps, amounts, taxes or GL entries are changed."
+msgstr "Zeitstempel, Beträge, Steuern und Hauptbucheinträge werden nicht verändert."
+
+#. Description of the 'Run once: Fill DATEV fields on Sales Invoices' (Button) field in DocType 'Gaertnerei Berger Settings'
+msgid "Fills empty DATEV fields on all existing Sales Invoices. Can be run only once."
+msgstr "Befüllt leere DATEV-Felder in allen vorhandenen Ausgangsrechnungen. Kann nur einmal ausgeführt werden."
+
+#. Description of the 'Sales Invoice DATEV Backfill Executed' (Check) field in DocType 'Gaertnerei Berger Settings'
+msgid "Set automatically when the Sales Invoice DATEV backfill has run. The backfill cannot run again while this is set."
+msgstr "Wird automatisch gesetzt, wenn die DATEV-Befüllung der Ausgangsrechnungen gelaufen ist. Solange gesetzt, kann sie nicht erneut laufen."
+
+#. Description of the 'Executed On' (Datetime) field in DocType 'Gaertnerei Berger Settings'
+msgid "Date and time the backfill was run."
+msgstr "Datum und Uhrzeit der Ausführung."
+
+#. Description of the 'Executed By' (Link) field in DocType 'Gaertnerei Berger Settings'
+msgid "User who ran the backfill."
+msgstr "Benutzer, der die Befüllung ausgeführt hat."
+
+#. Description of the 'Result' (Small Text) field in DocType 'Gaertnerei Berger Settings'
+msgid "Number of fields filled per DATEV field."
+msgstr "Anzahl der befüllten Felder je DATEV-Feld."
