@@ -18,7 +18,7 @@ S/H always refers to Konto (DATEV field #2). Invoices put the Personenkonto on K
 
 Ownership:
 
-- **SI/PI:** grouping owns Konto/Gegenkonto/BU/Umsatz; Mapping is metadata (Both). Account, BU and Umsatz rows in an SI/PI Mapping are ignored. Returns flip S/H and export no Fälligkeit: DATEV refuses a due date on a Gutschrift (REW02890).
+- **SI/PI:** grouping owns Konto/Gegenkonto/BU/Umsatz; Mapping is metadata (Both). Account, BU and Umsatz rows in an SI/PI Mapping are ignored. Returns flip S/H. Fälligkeit only on rows where the Personenkonto is on the invoice side (Debitor S / Kreditor H); Gutschriften, returns, negative lines, Is Paid / write-off rows and Stornos export none, since DATEV refuses a due date there (REW02890). Decided per row in both export modes.
 - **PI settlement rows:** ERPNext posts Is Paid payments and write-offs on the invoice itself; grouping emits them as extra rows (`base_paid_amount` / `base_write_off_amount`, same Belegfeld 1 as the invoice). Negative amounts (paid returns) flip to H.
 - **PE/JE:** Mapping owns Konto/Gegenkonto/BU; PE uses `custom_datev_*` (party = Personenkonto). Grouping collapses rows and sets S/H (+ JE Umsatz).
 - **PE for several invoices:** one line per allocated invoice / credit note (credit notes flip to H), or one net line, per DATEV Settings **Lines per Payment**. **Belegfeld 1 on Payment Lines** can put the invoice number in Belegfeld 1 for OPOS matching. See [export_modes.md](export_modes.md#payment-lines).

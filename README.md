@@ -52,7 +52,7 @@ Consultant Booking orientation (submitted vouchers only):
 | Journal Entry purchase | Aufwand | Kreditor | S |
 | Journal Entry transfer (no party) | Soll-Konto | Haben-Konto | S |
 
-- **SI / PI:** grouping owns Konto / Gegenkonto / BU / Umsatz; Mapping is metadata only (`Both`). S/H refers to Konto, so invoices are Debitor S / Kreditor H; returns flip and carry no Fälligkeit.
+- **SI / PI:** grouping owns Konto / Gegenkonto / BU / Umsatz; Mapping is metadata only (`Both`). S/H refers to Konto, so invoices are Debitor S / Kreditor H; returns flip. Only rows on the invoice side (Debitor S / Kreditor H) carry a Fälligkeit; Gutschriften, payments and write-offs never do.
 - **PE / JE:** Mapping owns Konto / Gegenkonto / BU; PE uses `custom_datev_*` (party side = Personenkonto).
 - **PE for several invoices:** DATEV Settings → **Payment Lines** chooses one line per invoice / credit note or one net line, and whether Belegfeld 1 carries the invoice number. Agree both with the Steuerberater.
 - Ungrouped PE / JE (and other voucher types) may fall through to raw GL with temporary against account **9090** and blank BU — accepted for v1, not blocked.

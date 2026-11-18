@@ -18,6 +18,7 @@ from frappe.tests.utils import FrappeTestCase
 
 from gaertnerei_berger.gb_datev.report.datev.datev import (
 	add_storno_rows,
+	clear_faelligkeit_off_invoice_side,
 	get_purchase_invoice_params,
 	get_sales_invoice_params,
 	keep_soll_haben_with_personenkonto,
@@ -84,11 +85,13 @@ LIVE_INVOICE_MAPPING = mapping(
 
 
 class InvoiceExportCase(TestCase):
-	def export(self, vouchers, mappings=None, **filters):
+	def export(self, vouchers, mappings=None, query_due_date=None, **filters):
 		gl_rows = [
 			gl_row(voucher_type, voucher.name, "Customer" if voucher_type == "Sales Invoice" else "Supplier")
 			for (voucher_type, _), voucher in vouchers.items()
 		]
+		for row in gl_rows:
+			row["Fälligkeit"] = query_due_date
 		export_filters = {
 			"company": "_Test GmbH",
 			"against_account": "9090",
@@ -107,6 +110,8 @@ class InvoiceExportCase(TestCase):
 			patch(f"{DATEV_MODULE}.get_account_maps", return_value=({}, {})),
 			patch(f"{DATEV_MODULE}.get_party_account_number", side_effect=party_number),
 			patch(f"{DATEV_MODULE}.get_automatic_account_numbers", return_value=set()),
+			patch(f"{DATEV_MODULE}.get_invoice_settlement_gegenkonto", return_value="1600"),
+			patch(f"{DATEV_MODULE}.get_settings_bu_schluessel", return_value=""),
 		):
 			return prepare_buchungsstapel_transactions(export_filters)
 
@@ -194,6 +199,56 @@ class TestFaelligkeit(InvoiceExportCase):
 			fields = params({})[0]
 			self.assertIn("is_return = 1 THEN NULL", fields)
 
+	def due_dates(self, rows):
+		return [
+			(row["Konto"], row[GEGENKONTO], row[SH], row["Fälligkeit"] and str(row["Fälligkeit"]))
+			for row in rows
+		]
+
+	def test_negative_line_on_invoice_gets_no_due_date(self):
+		purchase = invoice("ER-7", "3300", "8")
+		purchase["items"].append(
+			frappe._dict(custom_datev_account_no="3730", custom_bu_schlussel="8", base_net_amount=-20)
+		)
+		rows = self.export(
+			{("Purchase Invoice", "ER-7"): purchase},
+			mappings={"Purchase Invoice": {"Both": LIVE_INVOICE_MAPPING}},
+		)
+		self.assertEqual(
+			self.due_dates(rows),
+			[(KREDITOR, "3300", "H", "2026-12-31"), (KREDITOR, "3730", "S", None)],
+		)
+
+	def test_paid_and_written_off_rows_get_no_due_date(self):
+		purchase = invoice(
+			"ER-8",
+			"3300",
+			"8",
+			is_paid=1,
+			cash_bank_account="Kasse - T",
+			base_paid_amount=90,
+			write_off_account="Abschreibung - T",
+			base_write_off_amount=10,
+		)
+		for mappings, query_due_date in (
+			({"Purchase Invoice": {"Both": LIVE_INVOICE_MAPPING}}, None),
+			(None, "2026-12-31"),
+		):
+			with self.subTest(from_mapping=bool(mappings)):
+				rows = self.export(
+					{("Purchase Invoice", "ER-8"): purchase},
+					mappings=mappings,
+					query_due_date=query_due_date,
+				)
+				self.assertEqual(
+					self.due_dates(rows),
+					[
+						(KREDITOR, "3300", "H", "2026-12-31"),
+						(KREDITOR, "1600", "S", None),
+						(KREDITOR, "1600", "S", None),
+					],
+				)
+
 	def test_storno_has_no_due_date(self):
 		row = {
 			SH: "S",
@@ -206,6 +261,34 @@ class TestFaelligkeit(InvoiceExportCase):
 		self.assertEqual(result[0]["Fälligkeit"], "2026-12-31")
 		self.assertIsNone(result[1]["Fälligkeit"])
 		self.assertEqual(result[1][SH], "H")
+
+
+class TestClearFaelligkeitOffInvoiceSide(TestCase):
+	def row(self, party_type, sh, party_column=None):
+		row = {SH: sh, "Beleginfo - Art 3": party_type, "Fälligkeit": "2026-12-31"}
+		if party_column:
+			row["_datev_party_column"] = party_column
+		return row
+
+	def kept(self, row):
+		return clear_faelligkeit_off_invoice_side([row])[0]["Fälligkeit"] is not None
+
+	def test_invoice_side_keeps_due_date(self):
+		self.assertTrue(self.kept(self.row("Customer", "S")))
+		self.assertTrue(self.kept(self.row("Supplier", "H")))
+
+	def test_gutschrift_side_drops_due_date(self):
+		# Raw GL rows (GL mirror) book the party account on Konto
+		self.assertFalse(self.kept(self.row("Customer", "H")))
+		self.assertFalse(self.kept(self.row("Supplier", "S")))
+
+	def test_party_on_gegenkonto_reads_sh_the_other_way(self):
+		self.assertTrue(self.kept(self.row("Supplier", "S", party_column=GEGENKONTO)))
+		self.assertFalse(self.kept(self.row("Supplier", "H", party_column=GEGENKONTO)))
+
+	def test_rows_without_customer_or_supplier_keep_due_date(self):
+		self.assertTrue(self.kept(self.row(None, "S")))
+		self.assertTrue(self.kept(self.row("Employee", "S")))
 
 
 class TestKeepSollHabenWithPersonenkonto(TestCase):

@@ -51,6 +51,10 @@ STORNO_MODE_SWAP_SOLL_HABEN = "swap_soll_haben"
 # Remark ERPNext writes on the GL rows that reverse a voucher (make_reverse_gl_entries)
 ERPNEXT_REVERSAL_REMARK = "On cancellation of "
 
+# S/H of the Personenkonto on an invoice, by party type. The other side is a
+# Gutschrift or payment, where DATEV refuses a Fälligkeit (REW02890, GitLab #97)
+INVOICE_SIDE_BY_PARTY_TYPE = {"Customer": "S", "Supplier": "H"}
+
 UMSATZ_DECIMAL_COMMA = ","
 UMSATZ_DECIMAL_DOT = "."
 
@@ -255,6 +259,7 @@ def prepare_buchungsstapel_transactions(filters):
 	transactions = get_transactions(filters)
 	if is_gl_mirror_export(filters):
 		transactions = apply_buchungsstapel_mapping(transactions, filters)
+		transactions = clear_faelligkeit_off_invoice_side(transactions)
 		transactions = clear_automatic_account_bu_schluessel(transactions, filters)
 		return add_storno_rows(transactions, filters)
 
@@ -263,6 +268,8 @@ def prepare_buchungsstapel_transactions(filters):
 	transactions = group_journal_entry_buchungsstapel(transactions, filters)
 	transactions = apply_buchungsstapel_mapping(transactions, filters)
 	transactions = keep_soll_haben_with_personenkonto(transactions)
+	# After mapping and the S/H follow-up, so the final S/H decides
+	transactions = clear_faelligkeit_off_invoice_side(transactions)
 	# After mapping: mapping finds the voucher by Belegfeld 1
 	transactions = apply_payment_entry_belegfeld_1(transactions, filters)
 	# After grouping and mapping, so neither can bring the BU back
@@ -326,6 +333,37 @@ def keep_soll_haben_with_personenkonto(transactions):
 
 		row["Soll/Haben-Kennzeichen"] = "H" if row.get("Soll/Haben-Kennzeichen") == "S" else "S"
 		row["_datev_party_column"] = other_column
+
+	return transactions
+
+
+def clear_faelligkeit_off_invoice_side(transactions):
+	"""
+	Drop the Fälligkeit where the Personenkonto is not on the invoice side (GitLab #97).
+
+	DATEV reads Debitor Soll / Kreditor Haben as an invoice and the other side as
+	a Gutschrift or payment, which may carry no Fälligkeit (REW02890). Deciding
+	per row, not per voucher, also covers negative lines on a normal invoice and
+	Is Paid / write-off rows, which copy the invoice's due date.
+
+	S/H refers to Konto, so it is read the other way round when the Personenkonto
+	sits on Gegenkonto. Raw GL rows (GL mirror, ungrouped vouchers) book the party
+	account on Konto. Rows without a Customer/Supplier keep their Fälligkeit.
+	"""
+	for row in transactions:
+		if not row.get("Fälligkeit"):
+			continue
+
+		invoice_side = INVOICE_SIDE_BY_PARTY_TYPE.get(row.get("Beleginfo - Art 3"))
+		if not invoice_side:
+			continue
+
+		party_side = row.get("Soll/Haben-Kennzeichen")
+		if (row.get("_datev_party_column") or "Konto") != "Konto":
+			party_side = "H" if party_side == "S" else "S"
+
+		if party_side != invoice_side:
+			row["Fälligkeit"] = None
 
 	return transactions
 
@@ -990,6 +1028,9 @@ def make_invoice_settlement_row(base_row, konto, gegenkonto, amount, bu_schluess
 	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
 	row["BU-Schlüssel"] = bu_schluessel
 	row["_datev_settlement_row"] = True
+	# Kreditor on Konto, S: a payment, so clear_faelligkeit_off_invoice_side drops the due date
+	row["_datev_party_no"] = konto
+	row["_datev_party_column"] = "Konto"
 	return row
 
 
