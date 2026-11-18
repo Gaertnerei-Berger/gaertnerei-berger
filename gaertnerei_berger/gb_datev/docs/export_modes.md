@@ -24,8 +24,8 @@ For **Payment Entry** and **Journal Entry**, Mapping owns **Konto / Gegenkonto /
 
 | Voucher | Konto | Gegenkonto | S/H |
 |---------|-------|------------|-----|
-| Sales Invoice | Erlöskonto | Debitor | H |
-| Purchase Invoice | Aufwand | Kreditor | S |
+| Sales Invoice | Debitor | Erlöskonto | S |
+| Purchase Invoice | Kreditor | Aufwand | H |
 | PI Is Paid payment | Kreditor | Kasse/Bank | S |
 | PI write-off | Kreditor | Write-off account | S |
 | PE Receive | Bank | Personenkonto | S |
@@ -33,6 +33,8 @@ For **Payment Entry** and **Journal Entry**, Mapping owns **Konto / Gegenkonto /
 | JE sales | Erlöskonto | Debitor | H |
 | JE purchase | Aufwand | Kreditor | S |
 | JE transfer (no party) | Soll-Konto | Haben-Konto | S |
+
+S/H always refers to Konto (DATEV field #2). Invoices put the Personenkonto on Konto and the Erlös/Aufwand account (with its BU) on Gegenkonto, as DATEV and the customer's earlier export do (GitLab #68, #97). Journal Entries keep Erlös/Aufwand on Konto; both layouts book the same. If a DATEV Mapping moves the Personenkonto of a grouped row to the other column, S/H flips with it.
 
 ## Voucher status
 
@@ -54,7 +56,7 @@ Meant for clean-up runs. Example: invoice A was sent, then cancelled in ERPNext 
 How the export builds it:
 
 - A cancelled voucher's **original** GL rows go through the normal grouping, DATEV Mapping and Automatikkonto rules.
-- Each final row is followed by its Storno: same Umsatz, Konto, Gegenkonto, BU-Schlüssel, Belegdatum (the original's posting date) and Belegfeld 1; Buchungstext `Storno <voucher>`.
+- Each final row is followed by its Storno: same Umsatz, Konto, Gegenkonto, BU-Schlüssel, Belegdatum (the original's posting date) and Belegfeld 1; Buchungstext `Storno <voucher>`. The Storno carries no Fälligkeit.
   - `generalumkehr`: same Soll/Haben, **Generalumkehr (GU) = 1**
   - `swap_soll_haben`: Soll/Haben swapped, GU empty
 - ERPNext's own reversal GL rows ("On cancellation of …") are never exported; the export writes its own Storno.
@@ -67,7 +69,7 @@ Agree the Storno mark with the Steuerberater before the first run.
 
 Default for Berger. Matches live exports such as `RG-260020`.
 
-- Groups Sales/Purchase Invoice lines by Erlöskonto + tax/BU key
+- Groups Sales/Purchase Invoice lines by Erlös/Aufwand account + tax/BU key; the Debitor/Kreditor goes on Konto
 - Adds settlement rows for **Is Paid** payments and write-offs on Purchase Invoice (BU = Settings pay BU for the payment, blank for write-off)
 - Groups Payment Entry whose party rows (one per allocated invoice / credit note, plus unallocated) net exactly to one bank row, see [Payment Lines](#payment-lines)
 - Groups qualifying Journal Entry patterns, including party-less two-row transfers between balance-sheet accounts (Bank an Kasse)

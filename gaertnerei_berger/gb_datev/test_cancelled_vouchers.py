@@ -362,7 +362,7 @@ class TestCancelledGroupedVouchers(TestCase):
 		)
 		rows = self.prepare(gl_rows, voucher)
 
-		self.assertEqual([row["Konto"] for row in rows], ["5300", "5300"])
+		self.assertEqual([row["Gegenkonto (ohne BU-Schlüssel)"] for row in rows], ["5300", "5300"])
 		self.assertEqual(rows[1][GU], "1")
 		self.assertEqual(rows[1][SH], rows[0][SH])
 
