@@ -1,3 +1,4 @@
+import csv
 import zipfile
 from decimal import Decimal
 from io import BytesIO
@@ -13,7 +14,10 @@ from frappe.utils import cstr, now_datetime, today
 from gaertnerei_berger.gb_datev.report.datev.datev import (
 	apply_buchungsstapel_mapping,
 	apply_payment_entry_belegfeld_1,
+	build_datev_export_filters,
+	collect_used_master_data,
 	download_datev_csv,
+	get_datev_csv_files,
 	execute,
 	get_account_names,
 	get_customers,
@@ -286,6 +290,110 @@ class TestDatev(TestCase):
 		zip_buffer.write(frappe.response["filecontent"])
 
 		self.assertTrue(zipfile.is_zipfile(zip_buffer))
+
+	def test_master_data_comes_from_the_buchungsstapel(self):
+		"""Master-data files hold what the Buchungsstapel uses, nothing else (GitLab #76)."""
+		set_debtor_creditor_number(self.customer.name, self.company.name, "10001")
+		unused = make_customer_without_bookings("_Test Kunde ohne Buchung", self.company.name, "10002")
+
+		filters = build_datev_export_filters(self.company.name, today(), today())
+		files = {
+			csv_file["file_name"]: read_datev_csv(csv_file["csv_data"])
+			for csv_file in get_datev_csv_files(filters)["csv_files"]
+		}
+
+		buchungsstapel = files["EXTF_Buchungsstapel.csv"]
+		used_numbers = {row["Konto"] for row in buchungsstapel} | {
+			row["Gegenkonto (ohne BU-Schlüssel)"] for row in buchungsstapel
+		}
+		kunden = {row["Konto"]: row for row in files["EXTF_Kunden.csv"]}
+		konten = {row["Konto"] for row in files["EXTF_Kontenbeschriftungen.csv"]}
+
+		# The customer has no address and is still exported
+		self.assertIn("10001", used_numbers)
+		self.assertEqual(kunden["10001"]["Name (Adressatentyp Unternehmen)"], self.customer.customer_name)
+		# A customer without bookings in the period is left out
+		self.assertNotIn("10002", kunden, unused.name)
+		# Every Sachkonto of the Buchungsstapel is labelled, and only those
+		existing = set(
+			frappe.get_all(
+				"Account", filters={"company": self.company.name, "is_group": 0}, pluck="account_number"
+			)
+		)
+		self.assertEqual(konten, (used_numbers & existing) - set(kunden))
+		self.assertNotIn("10001", konten)
+
+
+class TestCollectUsedMasterData(TestCase):
+	"""Edge cases of collect_used_master_data (GitLab #76)."""
+
+	def collect(self, transactions, personenkonten):
+		rows = [frappe._dict(party_type=t, party=p, number=n) for t, p, n in personenkonten]
+		with patch("gaertnerei_berger.gb_datev.report.datev.datev.get_personenkonten", return_value=rows):
+			return collect_used_master_data(transactions, {"company": "X", "account_number_length": 4})
+
+	def test_party_found_by_number_only(self):
+		"""A Personenkonto a DATEV Mapping put on Konto, without Beleginfo 3."""
+		used = self.collect(
+			[{"Konto": "70003", "Gegenkonto (ohne BU-Schlüssel)": "1800"}],
+			[("Supplier", "Rufus", "70003")],
+		)
+		self.assertEqual(used["parties"]["Supplier"], ["Rufus"])
+		self.assertEqual(used["account_numbers"], ["1800"])
+		self.assertEqual(used["warnings"], [])
+
+	def test_party_without_number_is_reported(self):
+		used = self.collect(
+			[
+				{
+					"Konto": "1200",
+					"Gegenkonto (ohne BU-Schlüssel)": "4400",
+					"Beleginfo - Art 3": "Customer",
+					"Beleginfo - Inhalt 3": "<b>Kunde</b>",
+				}
+			],
+			[("Customer", "<b>Kunde</b>", None)],
+		)
+		self.assertEqual(used["parties"]["Customer"], [])
+		self.assertEqual(used["account_numbers"], ["1200", "4400"])
+		self.assertEqual(len(used["warnings"]), 1)
+		# Shown as HTML on the DATEV Export form
+		self.assertIn("&lt;b&gt;Kunde&lt;/b&gt;", used["warnings"][0])
+
+	def test_orphan_personenkonto_is_reported_not_labelled(self):
+		"""A 5-digit number no party owns never goes to Kontenbeschriftungen."""
+		used = self.collect([{"Konto": "10999", "Gegenkonto (ohne BU-Schlüssel)": "4400"}], [])
+		self.assertEqual(used["account_numbers"], ["4400"])
+		self.assertEqual(len(used["warnings"]), 1)
+		self.assertIn("10999", used["warnings"][0])
+
+
+def set_debtor_creditor_number(customer, company, number):
+	party_account = frappe.db.get_value(
+		"Party Account", {"parent": customer, "parenttype": "Customer", "company": company}
+	)
+	frappe.db.set_value("Party Account", party_account, "debtor_creditor_number", number)
+
+
+def make_customer_without_bookings(customer_name, company, number):
+	if frappe.db.exists("Customer", customer_name):
+		return frappe.get_doc("Customer", customer_name)
+
+	return frappe.get_doc(
+		{
+			"doctype": "Customer",
+			"customer_name": customer_name,
+			"customer_type": "Company",
+			"customer_group": frappe.db.get_value("Customer Group", {"is_group": 0}),
+			"accounts": [{"company": company, "debtor_creditor_number": number}],
+		}
+	).insert()
+
+
+def read_datev_csv(csv_data):
+	"""Rows of an EXTF file as dicts; line 1 is the DATEV header."""
+	lines = csv_data.decode("cp1252").split("\r\n")[1:]
+	return list(csv.DictReader(lines, delimiter=";"))
 
 
 class TestDatevSalesInvoiceGrouping(TestCase):

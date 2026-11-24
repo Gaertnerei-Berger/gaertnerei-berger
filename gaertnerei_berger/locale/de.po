@@ -387,3 +387,27 @@ msgstr "Benutzer, der die Befüllung ausgeführt hat."
 #. Description of the 'Result' (Small Text) field in DocType 'Gaertnerei Berger Settings'
 msgid "Number of fields filled per DATEV field."
 msgstr "Anzahl der befüllten Felder je DATEV-Feld."
+
+#. Label of the master_data_warnings (Small Text) field in DocType 'DATEV
+#. Export'
+#: gaertnerei_berger/gb_datev/doctype/datev_export/datev_export.json
+msgid "Master Data Warnings"
+msgstr "Hinweise zu Stammdaten"
+
+#. Description of the 'Master Data Warnings' (Small Text) field in DocType
+#. 'DATEV Export'
+#: gaertnerei_berger/gb_datev/doctype/datev_export/datev_export.json
+msgid "Used in the Buchungsstapel but left out of the Debitoren/Kreditoren files"
+msgstr "Im Buchungsstapel verwendet, aber nicht in den Debitoren-/Kreditorendateien enthalten"
+
+#: gaertnerei_berger/gb_datev/report/datev/datev.py
+msgid "{0} {1} has no Debitor/Kreditor number"
+msgstr "{0} {1} hat keine Debitoren-/Kreditorennummer"
+
+#: gaertnerei_berger/gb_datev/doctype/datev_export/datev_export.js
+msgid "Some Customers or Suppliers have no Debitor/Kreditor number and are missing from the master data files. See Master Data Warnings."
+msgstr "Einige Kunden oder Lieferanten haben keine Debitoren-/Kreditorennummer und fehlen in den Stammdatendateien. Siehe Hinweise zu Stammdaten."
+
+#: gaertnerei_berger/gb_datev/report/datev/datev.py
+msgid "Personenkonto {0} is used in the Buchungsstapel but belongs to no Customer or Supplier"
+msgstr "Personenkonto {0} wird im Buchungsstapel verwendet, gehört aber zu keinem Kunden oder Lieferanten"
