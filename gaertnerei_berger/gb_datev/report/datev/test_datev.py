@@ -15,6 +15,7 @@ from gaertnerei_berger.gb_datev.report.datev.datev import (
 	apply_buchungsstapel_mapping,
 	apply_payment_entry_belegfeld_1,
 	build_datev_export_filters,
+	collect_used_master_data,
 	download_datev_csv,
 	get_datev_csv_files,
 	execute,
@@ -321,6 +322,50 @@ class TestDatev(TestCase):
 		)
 		self.assertEqual(konten, (used_numbers & existing) - set(kunden))
 		self.assertNotIn("10001", konten)
+
+
+class TestCollectUsedMasterData(TestCase):
+	"""Edge cases of collect_used_master_data (GitLab #76)."""
+
+	def collect(self, transactions, personenkonten):
+		rows = [frappe._dict(party_type=t, party=p, number=n) for t, p, n in personenkonten]
+		with patch("gaertnerei_berger.gb_datev.report.datev.datev.get_personenkonten", return_value=rows):
+			return collect_used_master_data(transactions, {"company": "X", "account_number_length": 4})
+
+	def test_party_found_by_number_only(self):
+		"""A Personenkonto a DATEV Mapping put on Konto, without Beleginfo 3."""
+		used = self.collect(
+			[{"Konto": "70003", "Gegenkonto (ohne BU-Schlüssel)": "1800"}],
+			[("Supplier", "Rufus", "70003")],
+		)
+		self.assertEqual(used["parties"]["Supplier"], ["Rufus"])
+		self.assertEqual(used["account_numbers"], ["1800"])
+		self.assertEqual(used["warnings"], [])
+
+	def test_party_without_number_is_reported(self):
+		used = self.collect(
+			[
+				{
+					"Konto": "1200",
+					"Gegenkonto (ohne BU-Schlüssel)": "4400",
+					"Beleginfo - Art 3": "Customer",
+					"Beleginfo - Inhalt 3": "<b>Kunde</b>",
+				}
+			],
+			[("Customer", "<b>Kunde</b>", None)],
+		)
+		self.assertEqual(used["parties"]["Customer"], [])
+		self.assertEqual(used["account_numbers"], ["1200", "4400"])
+		self.assertEqual(len(used["warnings"]), 1)
+		# Shown as HTML on the DATEV Export form
+		self.assertIn("&lt;b&gt;Kunde&lt;/b&gt;", used["warnings"][0])
+
+	def test_orphan_personenkonto_is_reported_not_labelled(self):
+		"""A 5-digit number no party owns never goes to Kontenbeschriftungen."""
+		used = self.collect([{"Konto": "10999", "Gegenkonto (ohne BU-Schlüssel)": "4400"}], [])
+		self.assertEqual(used["account_numbers"], ["4400"])
+		self.assertEqual(len(used["warnings"]), 1)
+		self.assertIn("10999", used["warnings"][0])
 
 
 def set_debtor_creditor_number(customer, company, number):

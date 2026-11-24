@@ -15,7 +15,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import frappe
 from erpnext.accounts.utils import get_fiscal_year
 from frappe import _
-from frappe.utils import cint, cstr, flt
+from frappe.utils import cint, cstr, escape_html, flt
 
 from gaertnerei_berger.gb_datev.payment_entry import get_settings_bu_schluessel
 from gaertnerei_berger.utils.datev_constants import (
@@ -512,14 +512,28 @@ def collect_used_master_data(transactions, filters):
 			parties[row.party_type].add(row.party)
 			party_numbers.add(row.number)
 
+	# Escaped: the warnings are shown as HTML on the DATEV Export form
 	warnings = [
-		_("{0} {1} has no Debitor/Kreditor number").format(_(party_type), name)
+		_("{0} {1} has no Debitor/Kreditor number").format(_(party_type), escape_html(name))
 		for party_type, names in named.items()
 		for name in sorted(names - parties[party_type])
 	]
+
+	# A Personenkonto no party owns, e.g. an invoice booked on another party's
+	# account. It is longer than a Sachkonto, so it does not belong into
+	# Kontenbeschriftungen either; DATEV would not know it.
+	account_number_length = cint(filters.get("account_number_length") or 4)
+	orphans = sorted(n for n in numbers - party_numbers if len(n) > account_number_length)
+	warnings += [
+		_("Personenkonto {0} is used in the Buchungsstapel but belongs to no Customer or Supplier").format(
+			escape_html(number)
+		)
+		for number in orphans
+	]
+
 	return {
 		"parties": {party_type: sorted(names) for party_type, names in parties.items()},
-		"account_numbers": sorted(numbers - party_numbers),
+		"account_numbers": sorted(numbers - party_numbers - set(orphans)),
 		"warnings": warnings,
 	}
 
@@ -2619,8 +2633,9 @@ def get_debtors_creditors(filters, party_type, names=None):
 	Debitoren/Kreditoren rows of one party type.
 
 	Only parties with a Personenkonto (see get_personenkonto_sql): DATEV
-	rejects a record without Konto. The address is the primary one, else a billing address, else none, so
-	a Personenkonto used in the Buchungsstapel is never missing from the file.
+	rejects a record without Konto. The address is the primary one, else a
+	billing address, else none, so a Personenkonto used in the Buchungsstapel
+	is never missing from the file.
 	"""
 	if names is not None and not names:
 		return []

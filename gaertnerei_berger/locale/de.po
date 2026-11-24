@@ -407,3 +407,7 @@ msgstr "{0} {1} hat keine Debitoren-/Kreditorennummer"
 #: gaertnerei_berger/gb_datev/doctype/datev_export/datev_export.js
 msgid "Some Customers or Suppliers have no Debitor/Kreditor number and are missing from the master data files. See Master Data Warnings."
 msgstr "Einige Kunden oder Lieferanten haben keine Debitoren-/Kreditorennummer und fehlen in den Stammdatendateien. Siehe Hinweise zu Stammdaten."
+
+#: gaertnerei_berger/gb_datev/report/datev/datev.py
+msgid "Personenkonto {0} is used in the Buchungsstapel but belongs to no Customer or Supplier"
+msgstr "Personenkonto {0} wird im Buchungsstapel verwendet, gehört aber zu keinem Kunden oder Lieferanten"
