@@ -17,6 +17,7 @@ from erpnext.accounts.utils import get_fiscal_year
 from frappe import _
 from frappe.utils import cint, cstr, escape_html, flt
 
+from gaertnerei_berger.gb_datev.master_data import is_party_tax_id_field
 from gaertnerei_berger.gb_datev.payment_entry import get_settings_bu_schluessel
 from gaertnerei_berger.utils.datev_constants import (
 	PERSONENKONTO_LABEL_MAX_LENGTH,
@@ -55,12 +56,11 @@ PAYMENT_BELEGFELD_INVOICE = "invoice"
 STORNO_MODE_GENERALUMKEHR = "generalumkehr"
 STORNO_MODE_SWAP_SOLL_HABEN = "swap_soll_haben"
 
-# DATEV Settings "Tax ID in Master Data" (GitLab #114)
-MASTER_DATA_TAX_ID_STEUERNUMMER = "Steuernummer"
-MASTER_DATA_TAX_ID_UST_IDNR = "USt-IdNr"
-
-# Internal key for an Individual's full name; split into Vorname/Nachname, never written
+# Internal keys of a Debitoren/Kreditoren row, resolved in Python and never written (GitLab #114):
+# an Individual's full name, and the values of the DATEV Settings Steuernummer/USt-IdNr fields.
 PERSON_NAME_KEY = "_person_name"
+STEUERNUMMER_KEY = "_steuernummer"
+UST_IDNR_KEY = "_ust_idnr"
 # Remark ERPNext writes on the GL rows that reverse a voucher (make_reverse_gl_entries)
 ERPNEXT_REVERSAL_REMARK = "On cancellation of "
 
@@ -245,7 +245,8 @@ def get_datev_export_filter_values(company):
 		"payment_belegfeld_1": settings.get("payment_belegfeld_1") or PAYMENT_BELEGFELD_PAYMENT_ENTRY,
 		"include_cancelled": cint(settings.get("include_cancelled")),
 		"storno_mode": settings.get("storno_mode") or STORNO_MODE_GENERALUMKEHR,
-		"master_data_tax_id": settings.get("master_data_tax_id") or MASTER_DATA_TAX_ID_STEUERNUMMER,
+		"steuernummer_field": settings.get("steuernummer_field"),
+		"ust_idnr_field": settings.get("ust_idnr_field"),
 	}
 
 
@@ -2660,6 +2661,12 @@ def get_debtors_creditors(filters, party_type, names=None):
 	)
 	name_filter = f"AND {alias}.name IN %(names)s" if names is not None else ""
 	personenkonto = get_personenkonto_sql("par", "pacc")
+	steuernummer_field, ust_idnr_field = get_tax_id_fields(filters)
+	tax_id_columns = "".join(
+		f", {alias}.`{fieldname}` as '{key}'"
+		for fieldname, key in ((steuernummer_field, STEUERNUMMER_KEY), (ust_idnr_field, UST_IDNR_KEY))
+		if fieldname
+	)
 
 	rows = frappe.db.sql(
 		f"""
@@ -2688,8 +2695,8 @@ def get_debtors_creditors(filters, party_type, names=None):
 			adr.email_id as 'E-Mail',
 			adr.phone as 'Telefon',
 			adr.fax as 'Fax',
-			{alias}.website as 'Internet',
-			{alias}.tax_id as 'Steuernummer'
+			{alias}.website as 'Internet'
+			{tax_id_columns}
 			{zahlungssperre}
 
 		FROM `{table}` {alias}
@@ -2733,14 +2740,57 @@ def get_debtors_creditors(filters, party_type, names=None):
 		as_dict=1,
 	)
 
-	tax_id_mode = filters.get("master_data_tax_id") or MASTER_DATA_TAX_ID_STEUERNUMMER
+	same_field = bool(steuernummer_field) and steuernummer_field == ust_idnr_field
 	for row in rows:
 		vorname, nachname = split_person_name(row.pop(PERSON_NAME_KEY, None))
 		row["Vorname (Adressatentyp natürl. Person)"] = vorname
 		row["Name (Adressatentyp natürl. Person)"] = nachname
-		if tax_id_mode == MASTER_DATA_TAX_ID_UST_IDNR:
-			row.update(split_ust_idnr(row.pop("Steuernummer", None), row.get("Land")))
+		row.update(
+			get_tax_id_columns(
+				row.pop(STEUERNUMMER_KEY, None), row.pop(UST_IDNR_KEY, None), same_field, row.get("Land")
+			)
+		)
 	return rows
+
+
+def get_tax_id_fields(filters):
+	"""
+	Customer/Supplier fieldnames for Steuernummer and USt-IdNr from DATEV Settings (GitLab #114).
+
+	Not set in filters at all (reports, tests): tax_id as Steuernummer, as before.
+	A name that is no text field on both doctypes is left out, since it goes
+	into the SQL as a column; DATEV Settings refuses to save such a name anyway.
+	"""
+	if "steuernummer_field" not in filters and "ust_idnr_field" not in filters:
+		return "tax_id", None
+
+	return tuple(
+		fieldname if is_party_tax_id_field(fieldname) else None
+		for fieldname in (filters.get("steuernummer_field"), filters.get("ust_idnr_field"))
+	)
+
+
+def get_tax_id_columns(steuernummer, ust_idnr, same_field=False, country_code=None):
+	"""
+	DATEV Steuernummer / EU-Land / EU-USt-IdNr. of one party (GitLab #114).
+
+	Same field for both: a value with a two-letter prefix (DE123…) is a
+	USt-IdNr, any other a Steuernummer.
+	"""
+	if same_field:
+		value = cstr(steuernummer).strip()
+		if is_ust_idnr(value):
+			return split_ust_idnr(value, country_code)
+		return {"Steuernummer": value or None}
+
+	columns = {"Steuernummer": cstr(steuernummer).strip() or None}
+	columns.update(split_ust_idnr(ust_idnr, country_code))
+	return columns
+
+
+def is_ust_idnr(value):
+	"""True if value starts with a two-letter country prefix, like every EU USt-IdNr."""
+	return bool(re.match(r"^[A-Za-z]{2}", re.sub(r"\s+", "", cstr(value))))
 
 
 def split_person_name(name):
@@ -2769,7 +2819,7 @@ def split_ust_idnr(tax_id, country_code=None):
 	number = re.sub(r"\s+", "", cstr(tax_id)).upper()
 	if not number:
 		return {}
-	if re.match(r"^[A-Z]{2}", number):
+	if is_ust_idnr(number):
 		return {"EU-Land": number[:2], "EU-USt-IdNr.": number[2:]}
 	return {"EU-Land": cstr(country_code).upper() or None, "EU-USt-IdNr.": number}
 

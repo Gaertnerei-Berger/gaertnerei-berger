@@ -32,7 +32,9 @@
   "column_break_cancelled",
   "storno_mode",
   "section_break_master_data",
-  "master_data_tax_id"
+  "steuernummer_field",
+  "column_break_master_data",
+  "ust_idnr_field"
  ],
  "fields": [
   {
@@ -202,20 +204,30 @@
   {
    "fieldname": "section_break_master_data",
    "fieldtype": "Section Break",
-   "label": "Master Data (Debitoren/Kreditoren)"
+   "label": "Master Data (Debitoren/Kreditoren)",
+   "description": "Which Customer/Supplier field holds the Steuernummer and which the USt-IdNr (GitLab #114). Custom fields work too; the field must exist on both Customer and Supplier. Same field for both: a value starting with two letters (DE123…) is sent as USt-IdNr, any other as Steuernummer."
   },
   {
-   "default": "Steuernummer",
-   "description": "What the Tax ID of Customers and Suppliers holds (GitLab #114). Steuernummer: sent as Steuernummer. USt-IdNr: its two-letter prefix is sent as EU-Land, the rest as EU-USt-IdNr.",
-   "fieldname": "master_data_tax_id",
-   "fieldtype": "Select",
-   "label": "Tax ID in Master Data",
-   "options": "Steuernummer\nUSt-IdNr"
+   "default": "tax_id",
+   "description": "Sent as DATEV Steuernummer. Empty: no Steuernummer.",
+   "fieldname": "steuernummer_field",
+   "fieldtype": "Autocomplete",
+   "label": "Steuernummer from Field"
+  },
+  {
+   "fieldname": "column_break_master_data",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Sent as DATEV EU-Land + EU-USt-IdNr. (country prefix split off). Empty: no USt-IdNr.",
+   "fieldname": "ust_idnr_field",
+   "fieldtype": "Autocomplete",
+   "label": "USt-IdNr from Field"
   }
  ],
  "grid_page_length": 50,
  "links": [],
- "modified": "2026-11-24 17:00:00.000000",
+ "modified": "2026-11-24 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "GB DATEV",
  "name": "DATEV Settings",
