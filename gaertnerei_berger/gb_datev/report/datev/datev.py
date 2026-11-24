@@ -54,6 +54,13 @@ PAYMENT_BELEGFELD_INVOICE = "invoice"
 # DATEV Settings "Include Cancelled Vouchers" / "Storno Rows" (GitLab #106)
 STORNO_MODE_GENERALUMKEHR = "generalumkehr"
 STORNO_MODE_SWAP_SOLL_HABEN = "swap_soll_haben"
+
+# DATEV Settings "Tax ID in Master Data" (GitLab #114)
+MASTER_DATA_TAX_ID_STEUERNUMMER = "Steuernummer"
+MASTER_DATA_TAX_ID_UST_IDNR = "USt-IdNr"
+
+# Internal key for an Individual's full name; split into Vorname/Nachname, never written
+PERSON_NAME_KEY = "_person_name"
 # Remark ERPNext writes on the GL rows that reverse a voucher (make_reverse_gl_entries)
 ERPNEXT_REVERSAL_REMARK = "On cancellation of "
 
@@ -238,6 +245,7 @@ def get_datev_export_filter_values(company):
 		"payment_belegfeld_1": settings.get("payment_belegfeld_1") or PAYMENT_BELEGFELD_PAYMENT_ENTRY,
 		"include_cancelled": cint(settings.get("include_cancelled")),
 		"storno_mode": settings.get("storno_mode") or STORNO_MODE_GENERALUMKEHR,
+		"master_data_tax_id": settings.get("master_data_tax_id") or MASTER_DATA_TAX_ID_STEUERNUMMER,
 	}
 
 
@@ -2653,7 +2661,7 @@ def get_debtors_creditors(filters, party_type, names=None):
 	name_filter = f"AND {alias}.name IN %(names)s" if names is not None else ""
 	personenkonto = get_personenkonto_sql("par", "pacc")
 
-	return frappe.db.sql(
+	rows = frappe.db.sql(
 		f"""
 		SELECT
 
@@ -2662,14 +2670,11 @@ def get_debtors_creditors(filters, party_type, names=None):
 				WHEN 'Company' THEN {alias}.{name_field}
 				ELSE null
 				END as 'Name (Adressatentyp Unternehmen)',
+			/* split into Vorname/Nachname by split_person_name */
 			CASE {alias}.{type_field}
-				WHEN 'Individual' THEN TRIM(SUBSTR({alias}.{name_field}, LOCATE(' ', {alias}.{name_field})))
+				WHEN 'Individual' THEN {alias}.{name_field}
 				ELSE null
-				END as 'Name (Adressatentyp natürl. Person)',
-			CASE {alias}.{type_field}
-				WHEN 'Individual' THEN SUBSTRING_INDEX(SUBSTRING_INDEX({alias}.{name_field}, ' ', 1), ' ', -1)
-				ELSE null
-				END as 'Vorname (Adressatentyp natürl. Person)',
+				END as '{PERSON_NAME_KEY}',
 			CASE {alias}.{type_field}
 				WHEN 'Individual' THEN '1'
 				WHEN 'Company' THEN '2'
@@ -2727,6 +2732,46 @@ def get_debtors_creditors(filters, party_type, names=None):
 		},
 		as_dict=1,
 	)
+
+	tax_id_mode = filters.get("master_data_tax_id") or MASTER_DATA_TAX_ID_STEUERNUMMER
+	for row in rows:
+		vorname, nachname = split_person_name(row.pop(PERSON_NAME_KEY, None))
+		row["Vorname (Adressatentyp natürl. Person)"] = vorname
+		row["Name (Adressatentyp natürl. Person)"] = nachname
+		if tax_id_mode == MASTER_DATA_TAX_ID_UST_IDNR:
+			row.update(split_ust_idnr(row.pop("Steuernummer", None), row.get("Land")))
+	return rows
+
+
+def split_person_name(name):
+	"""
+	(Vorname, Nachname) of an Individual's name (GitLab #114).
+
+	The first word is the Vorname, the rest the Nachname. A one-word name is
+	the Nachname: DATEV needs a Nachname for a natürliche Person.
+	"""
+	words = cstr(name).split()
+	if not words:
+		return None, None
+	if len(words) == 1:
+		return None, words[0]
+	return words[0], " ".join(words[1:])
+
+
+def split_ust_idnr(tax_id, country_code=None):
+	"""
+	EU-Land and EU-USt-IdNr. from a USt-IdNr (GitLab #114).
+
+	DATEV wants the number without its country prefix: "DE 123 456 789" ->
+	EU-Land "DE", EU-USt-IdNr. "123456789". A number without a letter prefix
+	takes the country of the address.
+	"""
+	number = re.sub(r"\s+", "", cstr(tax_id)).upper()
+	if not number:
+		return {}
+	if re.match(r"^[A-Z]{2}", number):
+		return {"EU-Land": number[:2], "EU-USt-IdNr.": number[2:]}
+	return {"EU-Land": cstr(country_code).upper() or None, "EU-USt-IdNr.": number}
 
 
 def get_account_names(filters, account_numbers=None):
