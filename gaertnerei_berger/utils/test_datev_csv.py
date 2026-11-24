@@ -295,3 +295,39 @@ class TestPersonenkontoLabel(TestCase):
 		label = "x" * 40
 		row = cut_personenkonto_label({"Konto": "10006", "Kontenbeschriftung": label}, 5)
 		self.assertEqual(row["Kontenbeschriftung"], label)
+
+
+class TestStammdatenFormat(TestCase):
+	"""GitLab #116: Stammdaten files follow the DATEV-Format spec."""
+
+	def test_debitor_konto_is_unquoted(self):
+		csv_bytes = render_stammdaten(
+			[{"Konto": "10006", "Name (Adressatentyp Unternehmen)": "x"}], DebtorsCreditors
+		)
+		self.assertEqual(stammdaten_field(csv_bytes, DebtorsCreditors, "Konto"), "10006")
+
+	def test_account_name_konto_is_unquoted_and_keeps_leading_zero(self):
+		csv_bytes = render_stammdaten([{"Konto": "0135", "Kontenbeschriftung": "Software"}], AccountNames)
+		self.assertEqual(stammdaten_field(csv_bytes, AccountNames, "Konto"), "0135")
+		self.assertEqual(stammdaten_field(csv_bytes, AccountNames, "Kontenbeschriftung"), '"Software"')
+
+	def test_postcode_keeps_digits_only(self):
+		for postcode, expected in (("D-64760", '"64760"'), (" 64760 ", '"64760"'), ("64 760", '"64760"')):
+			csv_bytes = render_stammdaten([{"Konto": "10006", "Postleitzahl": postcode}], DebtorsCreditors)
+			self.assertEqual(
+				stammdaten_field(csv_bytes, DebtorsCreditors, "Postleitzahl"), expected, postcode
+			)
+
+	def test_postcode_digits_survive_the_length_cut(self):
+		csv_bytes = render_stammdaten(
+			[{"Konto": "10006", "Postleitzahl": "CH-8000 Zuerich 1234"}], DebtorsCreditors
+		)
+		self.assertEqual(stammdaten_field(csv_bytes, DebtorsCreditors, "Postleitzahl"), '"80001234"')
+
+	def test_empty_postcode_stays_empty(self):
+		csv_bytes = render_stammdaten([{"Konto": "10006", "Postleitzahl": None}], DebtorsCreditors)
+		self.assertEqual(stammdaten_field(csv_bytes, DebtorsCreditors, "Postleitzahl"), '""')
+
+	def test_name_stays_quoted(self):
+		csv_bytes = render_stammdaten([{"Konto": "10006", "Ort": "Beerfelden"}], DebtorsCreditors)
+		self.assertEqual(stammdaten_field(csv_bytes, DebtorsCreditors, "Ort"), '"Beerfelden"')

@@ -22,6 +22,12 @@ DATEV_ENCODING = "cp1252"
 # Belegdatum (#10) and Fälligkeit (#117) get the same treatment after formatting.
 UNQUOTED_ACCOUNT_COLUMNS = ("Konto", "Gegenkonto (ohne BU-Schlüssel)")
 
+# Debitoren/Kreditoren and Kontenbeschriftungen: Konto #1 is an unquoted number too.
+STAMMDATEN_CATEGORIES = (DataCategory.DEBTORS_CREDITORS, DataCategory.ACCOUNT_NAMES)
+
+# Debitoren/Kreditoren #18 and #156 allow digits only: "[\d]{0,10}".
+POSTCODE_COLUMNS = ("Postleitzahl", "Postleitzahl (Rechnungsadresse)")
+
 # Header #9 "Exportiert von" allows "\w{0,25}" (ASCII letters, digits, underscore).
 EXPORTED_BY_MAX_LENGTH = 25
 UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe", "Ü": "Ue", "ß": "ss"})
@@ -80,6 +86,16 @@ def cut_text(value, max_length):
 	return value
 
 
+def clean_postcode(value):
+	"""Keep only the digits of a Postleitzahl: "D-64760" -> "64760" (GitLab #116).
+
+	DATEV allows digits only. Non-text values (empty cells) stay as they are.
+	"""
+	if isinstance(value, str):
+		return re.sub(r"[^0-9]", "", value)
+	return value
+
+
 def format_datev_amount(value, separator=","):
 	"""Return Umsatz as DatevAmount (e.g. 100,00) for Decimal, float, int or str input."""
 	if value is None or (isinstance(value, str) and not value.strip()) or pd.isna(value):
@@ -106,6 +122,11 @@ def get_datev_csv(data, filters, csv_class):
 	empty_df = pd.DataFrame(columns=csv_class.COLUMNS)
 	data_df = pd.DataFrame.from_records(data)
 	result = pd.concat([empty_df, data_df], ignore_index=True)
+
+	if csv_class.DATA_CATEGORY == DataCategory.DEBTORS_CREDITORS:
+		# Before the length cut, so "D-64760" keeps all five digits (GitLab #116)
+		for column in POSTCODE_COLUMNS:
+			result[column] = result[column].map(clean_postcode)
 
 	for column, max_length in getattr(csv_class, "MAX_LENGTHS", {}).items():
 		result[column] = result[column].map(lambda value, n=max_length: cut_text(value, n))
@@ -134,6 +155,10 @@ def get_datev_csv(data, filters, csv_class):
 
 	if csv_class.DATA_CATEGORY == DataCategory.ACCOUNT_NAMES:
 		result["Sprach-ID"] = "de-DE"
+
+	if csv_class.DATA_CATEGORY in STAMMDATEN_CATEGORIES:
+		# Konto #1 is digits only, written without quotes (GitLab #116)
+		result["Konto"] = result["Konto"].map(as_datev_number).astype(object)
 
 	data = result.to_csv(
 		# Reason for str(';'): https://github.com/pandas-dev/pandas/issues/6035
