@@ -448,12 +448,22 @@ class TestDatevExportRecordsSetting(TestCase):
 
 		return get_doc.call_args_list[0].args[0]
 
+	# DATEV Settings tax fields: tested in test_datev_settings_check (GitLab #114)
+	@patch(
+		"gaertnerei_berger.gb_datev.report.datev.datev.assert_datev_settings_complete",
+		new=lambda company: None,
+	)
 	def test_export_record_copies_both_settings(self):
 		values = self.create({"include_cancelled": 1, "storno_mode": "swap_soll_haben"})
 
 		self.assertEqual(values["include_cancelled"], 1)
 		self.assertEqual(values["storno_mode"], "swap_soll_haben")
 
+	# DATEV Settings tax fields: tested in test_datev_settings_check (GitLab #114)
+	@patch(
+		"gaertnerei_berger.gb_datev.report.datev.datev.assert_datev_settings_complete",
+		new=lambda company: None,
+	)
 	def test_export_record_leaves_storno_mode_empty_when_off(self):
 		values = self.create({"include_cancelled": 0, "storno_mode": "generalumkehr"})
 

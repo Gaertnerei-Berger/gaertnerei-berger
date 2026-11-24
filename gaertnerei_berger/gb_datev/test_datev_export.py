@@ -28,6 +28,11 @@ class TestDATEVExportAPI(TestCase):
 
 		self.assertEqual(existing["name"], "DATEV-EXP-2026-00001")
 
+	# DATEV Settings tax fields: tested in test_datev_settings_check (GitLab #114)
+	@patch(
+		"gaertnerei_berger.gb_datev.report.datev.datev.assert_datev_settings_complete",
+		new=lambda company: None,
+	)
 	def test_create_datev_export_returns_duplicate_without_force(self):
 		with (
 			patch(
@@ -48,6 +53,11 @@ class TestDATEVExportAPI(TestCase):
 		self.assertTrue(result["duplicate"])
 		self.assertEqual(result["existing"]["name"], "DATEV-EXP-2026-00001")
 
+	# DATEV Settings tax fields: tested in test_datev_settings_check (GitLab #114)
+	@patch(
+		"gaertnerei_berger.gb_datev.report.datev.datev.assert_datev_settings_complete",
+		new=lambda company: None,
+	)
 	def test_create_datev_export_attaches_zip_and_sets_row_count(self):
 		export_doc = frappe._dict(name="DATEV-EXP-2026-00002")
 		export_doc.insert = MagicMock()
