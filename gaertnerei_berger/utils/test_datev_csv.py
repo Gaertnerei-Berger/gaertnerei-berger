@@ -214,3 +214,84 @@ class TestNumericFieldsUnquoted(TestCase):
 		csv.writer(buffer, delimiter=";", quoting=QUOTE_NONNUMERIC).writerow([DatevNumber("0135"), "text"])
 		self.assertEqual(buffer.getvalue(), '0135;"text"\r\n')
 		self.assertEqual(float(DatevNumber("0135")), 135.0)
+
+
+def render_stammdaten(rows, csv_class):
+	with patch("gaertnerei_berger.utils.datev_csv.get_header", return_value=['"EXTF"']):
+		return get_datev_csv(data=rows, filters={}, csv_class=csv_class)
+
+
+def stammdaten_field(csv_bytes, csv_class, name):
+	return data_lines(csv_bytes)[0][csv_class.COLUMNS.index(name)]
+
+
+class TestFieldLengths(TestCase):
+	"""GitLab #113: DATEV warned REW00967 (too long) on names and Beleginfo - Art."""
+
+	def test_beleginfo_art_is_cut_to_20(self):
+		csv_bytes = render_transactions([booking(**{"Beleginfo - Art 5": "Lieferanten-Rechnungsnummer"})])
+		self.assertEqual(data_lines(csv_bytes)[0][column("Beleginfo - Art 5")], '"Lieferanten-Rechnung"')
+
+	def test_purchase_invoice_beleginfo_labels_fit(self):
+		from gaertnerei_berger.gb_datev.report.datev.datev import get_purchase_invoice_params
+
+		fields = get_purchase_invoice_params({})[0]
+		for label in re.findall(r"'([^']+)' as 'Beleginfo - Art \d'", fields):
+			self.assertLessEqual(len(label), 20, label)
+
+	def test_buchungstext_is_cut_to_60(self):
+		csv_bytes = render_transactions([booking(Buchungstext="x" * 70)])
+		self.assertEqual(data_lines(csv_bytes)[0][column("Buchungstext")], '"{}"'.format("x" * 60))
+
+	def test_short_text_stays_as_it_is(self):
+		csv_bytes = render_transactions([booking(Buchungstext="Pflanzen")])
+		self.assertEqual(data_lines(csv_bytes)[0][column("Buchungstext")], '"Pflanzen"')
+
+	def test_debitor_names_are_cut(self):
+		row = {
+			"Konto": "10006",
+			"Name (Adressatentyp Unternehmen)": "Förderverein Grundschule in der Stried und Umgebung e.V.",
+			"Name (Adressatentyp natürl. Person)": "Rechtsanwältin und Notarin Christin Schulze",
+			"Ort": "Erbach im Odenwald, Ortsteil Bullau-Ost",
+		}
+		csv_bytes = render_stammdaten([row], DebtorsCreditors)
+		company = stammdaten_field(csv_bytes, DebtorsCreditors, "Name (Adressatentyp Unternehmen)")
+		person = stammdaten_field(csv_bytes, DebtorsCreditors, "Name (Adressatentyp natürl. Person)")
+		ort = stammdaten_field(csv_bytes, DebtorsCreditors, "Ort")
+		self.assertEqual(len(company.strip('"')), 50)
+		self.assertEqual(person, '"Rechtsanwältin und Notarin Chr"')
+		self.assertLessEqual(len(ort.strip('"')), 30)
+
+	def test_konto_is_never_cut(self):
+		csv_bytes = render_stammdaten([{"Konto": "1009655", "Kontenbeschriftung": "x"}], AccountNames)
+		self.assertEqual(stammdaten_field(csv_bytes, AccountNames, "Konto").strip('"'), "1009655")
+
+	def test_max_length_columns_exist(self):
+		for csv_class in (Transactions, DebtorsCreditors, AccountNames):
+			self.assertLessEqual(set(csv_class.MAX_LENGTHS), set(csv_class.COLUMNS))
+
+
+class TestPersonenkontoLabel(TestCase):
+	"""GitLab #113: DATEV puts a Personenkonto's label into "Nachname" (30)."""
+
+	def test_personenkonto_label_is_cut_to_30(self):
+		from gaertnerei_berger.gb_datev.report.datev.datev import cut_personenkonto_label
+
+		row = cut_personenkonto_label(
+			{"Konto": "10006", "Kontenbeschriftung": "Förderverein Grundschule in der Stried"}, 4
+		)
+		self.assertEqual(row["Kontenbeschriftung"], "Förderverein Grundschule in de")
+
+	def test_sachkonto_keeps_40(self):
+		from gaertnerei_berger.gb_datev.report.datev.datev import cut_personenkonto_label
+
+		label = "Erlöse 19 % USt Pflanzen und Gartenbedarf"[:40]
+		row = cut_personenkonto_label({"Konto": "4400", "Kontenbeschriftung": label}, 4)
+		self.assertEqual(row["Kontenbeschriftung"], label)
+
+	def test_sachkontenlaenge_from_settings(self):
+		from gaertnerei_berger.gb_datev.report.datev.datev import cut_personenkonto_label
+
+		label = "x" * 40
+		row = cut_personenkonto_label({"Konto": "10006", "Kontenbeschriftung": label}, 5)
+		self.assertEqual(row["Kontenbeschriftung"], label)

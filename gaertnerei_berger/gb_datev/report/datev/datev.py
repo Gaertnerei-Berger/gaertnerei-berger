@@ -19,11 +19,17 @@ from frappe.utils import cint, cstr, flt
 
 from gaertnerei_berger.gb_datev.payment_entry import get_settings_bu_schluessel
 from gaertnerei_berger.utils.datev_constants import (
+	PERSONENKONTO_LABEL_MAX_LENGTH,
 	AccountNames,
 	DebtorsCreditors,
 	Transactions,
 )
-from gaertnerei_berger.utils.datev_csv import build_datev_zip_bytes, get_datev_csv, zip_and_download
+from gaertnerei_berger.utils.datev_csv import (
+	build_datev_zip_bytes,
+	cut_text,
+	get_datev_csv,
+	zip_and_download,
+)
 
 BUCHUNGSSTAPEL_REPORT = "EXTF_Buchungsstapel.csv"
 ACCOUNT_TAX_RATE_PATTERN = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
@@ -1861,9 +1867,10 @@ def get_sales_invoice_params(filters):
 
 def get_purchase_invoice_params(filters):
 	extra_fields = """
-		, 'Lieferanten-Rechnungsnummer' as 'Beleginfo - Art 5'
+		-- Beleginfo - Art takes 20 characters (REW00967, GitLab #113)
+		, 'Lief.-Rechnungsnr.' as 'Beleginfo - Art 5'
 		, pi.bill_no as 'Beleginfo - Inhalt 5'
-		, 'Lieferanten-Rechnungsdatum' as 'Beleginfo - Art 6'
+		, 'Lief.-Rechnungsdatum' as 'Beleginfo - Art 6'
 		, pi.bill_date as 'Beleginfo - Inhalt 6'
 		-- DATEV allows no Fälligkeit on a Gutschrift (REW02890, GitLab #97)
 		, CASE WHEN pi.is_return = 1 THEN NULL ELSE pi.due_date END as 'Fälligkeit'
@@ -2619,7 +2626,7 @@ def get_suppliers(filters):
 
 
 def get_account_names(filters):
-	return frappe.db.sql(
+	accounts = frappe.db.sql(
 		"""
 		SELECT
 
@@ -2635,6 +2642,20 @@ def get_account_names(filters):
 		filters,
 		as_dict=1,
 	)
+	return [cut_personenkonto_label(row, filters.get("account_number_length")) for row in accounts]
+
+
+def cut_personenkonto_label(row, account_number_length):
+	"""
+	Cut the label of a Personenkonto to 30 characters (GitLab #113).
+
+	A number longer than the Sachkontenlänge is a Personenkonto. DATEV writes its
+	label into the Debitor/Kreditor's "Nachname" and warns when it is longer.
+	"""
+	sachkontenlaenge = cint(account_number_length) or 4
+	if len(cstr(row.get("Konto")).strip()) > sachkontenlaenge:
+		row["Kontenbeschriftung"] = cut_text(row.get("Kontenbeschriftung"), PERSONENKONTO_LABEL_MAX_LENGTH)
+	return row
 
 
 @frappe.whitelist()

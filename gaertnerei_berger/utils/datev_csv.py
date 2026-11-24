@@ -73,6 +73,13 @@ def clean_datev_user_name(name):
 	return name[:EXPORTED_BY_MAX_LENGTH].rstrip("_")
 
 
+def cut_text(value, max_length):
+	"""Cut a text to DATEV's max. field length (GitLab #113); other values stay as they are."""
+	if isinstance(value, str) and len(value) > max_length:
+		return value[:max_length].rstrip()
+	return value
+
+
 def format_datev_amount(value, separator=","):
 	"""Return Umsatz as DatevAmount (e.g. 100,00) for Decimal, float, int or str input."""
 	if value is None or (isinstance(value, str) and not value.strip()) or pd.isna(value):
@@ -99,6 +106,9 @@ def get_datev_csv(data, filters, csv_class):
 	empty_df = pd.DataFrame(columns=csv_class.COLUMNS)
 	data_df = pd.DataFrame.from_records(data)
 	result = pd.concat([empty_df, data_df], ignore_index=True)
+
+	for column, max_length in getattr(csv_class, "MAX_LENGTHS", {}).items():
+		result[column] = result[column].map(lambda value, n=max_length: cut_text(value, n))
 
 	if csv_class.DATA_CATEGORY == DataCategory.TRANSACTIONS:
 		result["Belegdatum"] = pd.to_datetime(result["Belegdatum"])

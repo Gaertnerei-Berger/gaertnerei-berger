@@ -472,6 +472,42 @@ ACCOUNT_NAME_COLUMNS = [
 ]
 
 
+# Max. text length per column, from the DATEV-Format spec. Longer values make DATEV
+# warn (REW00967) and cut them on import; the writer cuts them first (GitLab #113).
+TRANSACTION_MAX_LENGTHS = {
+	"Buchungstext": 60,
+	**{f"Beleginfo - Art {n}": 20 for n in range(1, 9)},
+	**{f"Beleginfo - Inhalt {n}": 210 for n in range(1, 9)},
+	**{f"Zusatzinformation - Art {n}": 20 for n in range(1, 21)},
+	**{f"Zusatzinformation - Inhalt {n}": 210 for n in range(1, 21)},
+}
+
+DEBTOR_CREDITOR_MAX_LENGTHS = {
+	"Name (Adressatentyp Unternehmen)": 50,
+	"Name (Adressatentyp natürl. Person)": 30,
+	"Vorname (Adressatentyp natürl. Person)": 30,
+	"Name (Adressatentyp keine Angabe)": 50,
+	"Kurzbezeichnung": 15,
+	"Straße": 36,
+	"Postleitzahl": 10,
+	"Ort": 30,
+	"Adresszusatz": 36,
+	"Telefon": 60,
+	"E-Mail": 60,
+	"Internet": 60,
+	"Fax": 60,
+	"Steuernummer": 20,
+}
+
+ACCOUNT_NAME_MAX_LENGTHS = {
+	"Kontenbeschriftung": 40,
+}
+
+# DATEV puts the Kontenbeschriftung of a Personenkonto into the Debitor/Kreditor's
+# "Nachname", which takes 30 characters (GitLab #113).
+PERSONENKONTO_LABEL_MAX_LENGTH = 30
+
+
 class DataCategory:
 	"""Field of the CSV Header."""
 
@@ -496,6 +532,7 @@ class Transactions:
 	# Must match the number of COLUMNS: version 13 has 125 fields.
 	FORMAT_VERSION = "13"
 	COLUMNS = TRANSACTION_COLUMNS
+	MAX_LENGTHS = TRANSACTION_MAX_LENGTHS
 
 
 class DebtorsCreditors:
@@ -503,6 +540,7 @@ class DebtorsCreditors:
 	FORMAT_NAME = FormatName.DEBTORS_CREDITORS
 	FORMAT_VERSION = "5"
 	COLUMNS = DEBTOR_CREDITOR_COLUMNS
+	MAX_LENGTHS = DEBTOR_CREDITOR_MAX_LENGTHS
 
 
 class AccountNames:
@@ -510,3 +548,4 @@ class AccountNames:
 	FORMAT_NAME = FormatName.ACCOUNT_NAMES
 	FORMAT_VERSION = "2"
 	COLUMNS = ACCOUNT_NAME_COLUMNS
+	MAX_LENGTHS = ACCOUNT_NAME_MAX_LENGTHS
