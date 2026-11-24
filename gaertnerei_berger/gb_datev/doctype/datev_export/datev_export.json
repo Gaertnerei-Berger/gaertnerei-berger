@@ -23,6 +23,7 @@
   "storno_mode",
   "section_break_details",
   "error_message",
+  "master_data_warnings",
   "remarks"
  ],
  "fields": [
@@ -128,6 +129,14 @@
    "read_only": 1
   },
   {
+   "depends_on": "master_data_warnings",
+   "description": "Used in the Buchungsstapel but left out of the Debitoren/Kreditoren files",
+   "fieldname": "master_data_warnings",
+   "fieldtype": "Small Text",
+   "label": "Master Data Warnings",
+   "read_only": 1
+  },
+  {
    "fieldname": "remarks",
    "fieldtype": "Small Text",
    "label": "Remarks"
@@ -156,7 +165,7 @@
   }
  ],
  "links": [],
- "modified": "2026-10-28 19:30:00.000000",
+ "modified": "2026-11-24 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "GB DATEV",
  "name": "DATEV Export",

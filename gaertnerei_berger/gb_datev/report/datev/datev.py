@@ -442,12 +442,15 @@ def build_datev_export_filters(company, from_date, to_date, voucher_type=None):
 
 def get_datev_csv_files(filters):
 	transactions = prepare_buchungsstapel_transactions(filters)
-	account_names = get_account_names(filters)
-	customers = get_customers(filters)
-	suppliers = get_suppliers(filters)
+	# Master data only for what the Buchungsstapel uses (GitLab #76)
+	used = collect_used_master_data(transactions, filters)
+	account_names = get_account_names(filters, used["account_numbers"])
+	customers = get_customers(filters, used["parties"]["Customer"])
+	suppliers = get_suppliers(filters, used["parties"]["Supplier"])
 
 	return {
 		"transactions": transactions,
+		"master_data_warnings": used["warnings"],
 		"csv_files": [
 			{
 				"file_name": "EXTF_Buchungsstapel.csv",
@@ -476,7 +479,103 @@ def generate_datev_zip_payload(filters):
 		"zip_bytes": build_datev_zip_bytes(export_data["csv_files"]),
 		"zip_filename": zip_name,
 		"row_count": len(export_data["transactions"]),
+		"master_data_warnings": export_data["master_data_warnings"],
 	}
+
+
+def collect_used_master_data(transactions, filters):
+	"""
+	Customers, Suppliers and accounts the Buchungsstapel uses (GitLab #76).
+
+	A party counts when a row names it (Beleginfo 3) or when its Personenkonto
+	is on Konto or Gegenkonto, so a number set by a DATEV Mapping is found too.
+	Personenkonten go to the Debitoren/Kreditoren files, the other numbers to
+	Kontenbeschriftungen. A used party without a Personenkonto cannot be
+	imported by DATEV; it is left out and reported in `warnings`.
+	"""
+	named = {"Customer": set(), "Supplier": set()}
+	numbers = set()
+	for row in transactions:
+		for column in ACCOUNT_MAP_COLUMNS:
+			number = cstr(row.get(column)).strip()
+			if number:
+				numbers.add(number)
+
+		party_type = row.get("Beleginfo - Art 3")
+		if party_type in named and row.get("Beleginfo - Inhalt 3"):
+			named[party_type].add(row.get("Beleginfo - Inhalt 3"))
+
+	parties = {"Customer": set(), "Supplier": set()}
+	party_numbers = set()
+	for row in get_personenkonten(filters, named, numbers):
+		if row.number:
+			parties[row.party_type].add(row.party)
+			party_numbers.add(row.number)
+
+	warnings = [
+		_("{0} {1} has no Debitor/Kreditor number").format(_(party_type), name)
+		for party_type, names in named.items()
+		for name in sorted(names - parties[party_type])
+	]
+	return {
+		"parties": {party_type: sorted(names) for party_type, names in parties.items()},
+		"account_numbers": sorted(numbers - party_numbers),
+		"warnings": warnings,
+	}
+
+
+def get_personenkonto_sql(party_account_alias, account_alias):
+	"""
+	SQL for the Personenkonto of a Party Account row.
+
+	The Debtor/Creditor Number, else the number of the party's own account
+	(GitLab #53 setup), as the Buchungsstapel does in get_party_account_number.
+	A number no longer than a Sachkonto is a collective account, not a
+	Personenkonto.
+	"""
+	return (
+		f"COALESCE(NULLIF({party_account_alias}.debtor_creditor_number, ''), "
+		f"IF(CHAR_LENGTH({account_alias}.account_number) > %(account_number_length)s, "
+		f"{account_alias}.account_number, NULL))"
+	)
+
+
+def get_personenkonten(filters, named, numbers):
+	"""
+	Party Account rows of the named parties or with one of the numbers.
+
+	Returns party_type, party and number (None when the party has no
+	Personenkonto for the company).
+	"""
+	customers = tuple(named.get("Customer") or ()) or ("",)
+	suppliers = tuple(named.get("Supplier") or ()) or ("",)
+	return frappe.db.sql(
+		"""
+		SELECT party_type, party, number
+		FROM (
+			SELECT
+				par.parenttype as party_type,
+				par.parent as party,
+				{personenkonto} as number
+			FROM `tabParty Account` par
+			LEFT JOIN `tabAccount` pacc
+			ON pacc.name = par.account
+			WHERE par.company = %(company)s
+			AND par.parenttype IN ('Customer', 'Supplier')
+		) personenkonto
+		WHERE (party_type = 'Customer' AND party IN %(customers)s)
+		OR (party_type = 'Supplier' AND party IN %(suppliers)s)
+		OR number IN %(numbers)s
+		""".format(personenkonto=get_personenkonto_sql("par", "pacc")),
+		{
+			"company": filters.get("company"),
+			"account_number_length": cint(filters.get("account_number_length") or 4),
+			"customers": customers,
+			"suppliers": suppliers,
+			"numbers": tuple(numbers) or ("",),
+		},
+		as_dict=1,
+	)
 
 
 def get_existing_datev_export(company, from_date, to_date):
@@ -575,6 +674,7 @@ def create_datev_export(company, from_date, to_date, voucher_type=None, remarks=
 
 		export_doc.export_file = file_doc.file_url
 		export_doc.row_count = payload["row_count"]
+		export_doc.master_data_warnings = "\n".join(payload.get("master_data_warnings") or [])
 		export_doc.status = "Generated"
 		export_doc.save(ignore_permissions=True)
 	except Exception as error:
@@ -2492,31 +2592,70 @@ def normalize_mapped_umsatz(value):
 	return Decimal(str(flt(value))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def get_customers(filters):
+def get_customers(filters, customers=None):
 	"""
-	Get a list of Customers.
+	Debitoren for the EXTF_Kunden file.
 
 	Arguments:
 	filters -- dict of filters to be passed to the sql query
+	customers -- Customer names to export; only these (GitLab #76). None: all.
 	"""
+	return get_debtors_creditors(filters, "Customer", customers)
+
+
+def get_suppliers(filters, suppliers=None):
+	"""
+	Kreditoren for the EXTF_Lieferanten file.
+
+	Arguments:
+	filters -- dict of filters to be passed to the sql query
+	suppliers -- Supplier names to export; only these (GitLab #76). None: all.
+	"""
+	return get_debtors_creditors(filters, "Supplier", suppliers)
+
+
+def get_debtors_creditors(filters, party_type, names=None):
+	"""
+	Debitoren/Kreditoren rows of one party type.
+
+	Only parties with a Personenkonto (see get_personenkonto_sql): DATEV
+	rejects a record without Konto. The address is the primary one, else a billing address, else none, so
+	a Personenkonto used in the Buchungsstapel is never missing from the file.
+	"""
+	if names is not None and not names:
+		return []
+
+	# party_type is "Customer" or "Supplier", never user input
+	table, alias, type_field, name_field = {
+		"Customer": ("tabCustomer", "cus", "customer_type", "customer_name"),
+		"Supplier": ("tabSupplier", "sup", "supplier_type", "supplier_name"),
+	}[party_type]
+	zahlungssperre = (
+		f", case {alias}.on_hold when 1 then {alias}.release_date else null end as 'Zahlungssperre bis'"
+		if party_type == "Supplier"
+		else ""
+	)
+	name_filter = f"AND {alias}.name IN %(names)s" if names is not None else ""
+	personenkonto = get_personenkonto_sql("par", "pacc")
+
 	return frappe.db.sql(
-		"""
+		f"""
 		SELECT
 
-			par.debtor_creditor_number as 'Konto',
-			CASE cus.customer_type
-				WHEN 'Company' THEN cus.customer_name
+			{personenkonto} as 'Konto',
+			CASE {alias}.{type_field}
+				WHEN 'Company' THEN {alias}.{name_field}
 				ELSE null
 				END as 'Name (Adressatentyp Unternehmen)',
-			CASE cus.customer_type
-				WHEN 'Individual' THEN TRIM(SUBSTR(cus.customer_name, LOCATE(' ', cus.customer_name)))
+			CASE {alias}.{type_field}
+				WHEN 'Individual' THEN TRIM(SUBSTR({alias}.{name_field}, LOCATE(' ', {alias}.{name_field})))
 				ELSE null
 				END as 'Name (Adressatentyp natürl. Person)',
-			CASE cus.customer_type
-				WHEN 'Individual' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(cus.customer_name, ' ', 1), ' ', -1)
+			CASE {alias}.{type_field}
+				WHEN 'Individual' THEN SUBSTRING_INDEX(SUBSTRING_INDEX({alias}.{name_field}, ' ', 1), ' ', -1)
 				ELSE null
 				END as 'Vorname (Adressatentyp natürl. Person)',
-			CASE cus.customer_type
+			CASE {alias}.{type_field}
 				WHEN 'Individual' THEN '1'
 				WHEN 'Company' THEN '2'
 				ELSE '0'
@@ -2529,105 +2668,65 @@ def get_customers(filters):
 			adr.email_id as 'E-Mail',
 			adr.phone as 'Telefon',
 			adr.fax as 'Fax',
-			cus.website as 'Internet',
-			cus.tax_id as 'Steuernummer'
+			{alias}.website as 'Internet',
+			{alias}.tax_id as 'Steuernummer'
+			{zahlungssperre}
 
-		FROM `tabCustomer` cus
+		FROM `{table}` {alias}
 
-			left join `tabParty Account` par
-			on par.parent = cus.name
-			and par.parenttype = 'Customer'
+			join `tabParty Account` par
+			on par.parent = {alias}.name
+			and par.parenttype = %(party_type)s
 			and par.company = %(company)s
 
-			left join `tabDynamic Link` dyn_adr
-			on dyn_adr.link_name = cus.name
-			and dyn_adr.link_doctype = 'Customer'
-			and dyn_adr.parenttype = 'Address'
+			left join `tabAccount` pacc
+			on pacc.name = par.account
 
+			/* primary address, else a billing address, else none */
 			left join `tabAddress` adr
-			on adr.name = dyn_adr.parent
-			and adr.is_primary_address = '1'
+			on adr.name = (
+				SELECT a.name
+				FROM `tabAddress` a
+				JOIN `tabDynamic Link` dl
+				ON dl.parent = a.name
+				AND dl.parenttype = 'Address'
+				AND dl.link_doctype = %(party_type)s
+				AND dl.link_name = {alias}.name
+				WHERE a.disabled = 0
+				ORDER BY a.is_primary_address DESC, (a.address_type = 'Billing') DESC, a.creation
+				LIMIT 1
+			)
 
 			left join `tabCountry` country
 			on country.name = adr.country
 
-		WHERE adr.is_primary_address = '1'
+		WHERE {personenkonto} IS NOT NULL
+		{name_filter}
+		ORDER BY 1
 		""",
-		filters,
+		{
+			**filters,
+			"account_number_length": cint(filters.get("account_number_length") or 4),
+			"party_type": party_type,
+			"names": tuple(names) if names is not None else None,
+		},
 		as_dict=1,
 	)
 
 
-def get_suppliers(filters):
+def get_account_names(filters, account_numbers=None):
 	"""
-	Get a list of Suppliers.
+	Sachkonten for the EXTF_Kontenbeschriftungen file.
 
-	Arguments:
-	filters -- dict of filters to be passed to the sql query
+	account_numbers -- only these accounts (GitLab #76); None: every account
+	with a number.
 	"""
-	return frappe.db.sql(
-		"""
-		SELECT
+	if account_numbers is not None and not account_numbers:
+		return []
 
-			par.debtor_creditor_number as 'Konto',
-			CASE sup.supplier_type
-				WHEN 'Company' THEN sup.supplier_name
-				ELSE null
-				END as 'Name (Adressatentyp Unternehmen)',
-			CASE sup.supplier_type
-				WHEN 'Individual' THEN TRIM(SUBSTR(sup.supplier_name, LOCATE(' ', sup.supplier_name)))
-				ELSE null
-				END as 'Name (Adressatentyp natürl. Person)',
-			CASE sup.supplier_type
-				WHEN 'Individual' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(sup.supplier_name, ' ', 1), ' ', -1)
-				ELSE null
-				END as 'Vorname (Adressatentyp natürl. Person)',
-			CASE sup.supplier_type
-				WHEN 'Individual' THEN '1'
-				WHEN 'Company' THEN '2'
-				ELSE '0'
-				END as 'Adressatentyp',
-			adr.address_line1 as 'Straße',
-			adr.pincode as 'Postleitzahl',
-			adr.city as 'Ort',
-			UPPER(country.code) as 'Land',
-			adr.address_line2 as 'Adresszusatz',
-			adr.email_id as 'E-Mail',
-			adr.phone as 'Telefon',
-			adr.fax as 'Fax',
-			sup.website as 'Internet',
-			sup.tax_id as 'Steuernummer',
-			case sup.on_hold when 1 then sup.release_date else null end as 'Zahlungssperre bis'
-
-		FROM `tabSupplier` sup
-
-			left join `tabParty Account` par
-			on par.parent = sup.name
-			and par.parenttype = 'Supplier'
-			and par.company = %(company)s
-
-			left join `tabDynamic Link` dyn_adr
-			on dyn_adr.link_name = sup.name
-			and dyn_adr.link_doctype = 'Supplier'
-			and dyn_adr.parenttype = 'Address'
-
-			left join `tabAddress` adr
-			on adr.name = dyn_adr.parent
-			and adr.is_primary_address = '1'
-
-			left join `tabCountry` country
-			on country.name = adr.country
-
-		WHERE adr.is_primary_address = '1'
-		""",
-		filters,
-		as_dict=1,
-	)
-
-
-def get_account_names(filters):
+	number_filter = "AND account_number IN %(account_numbers)s" if account_numbers is not None else ""
 	accounts = frappe.db.sql(
-		"""
+		f"""
 		SELECT
 
 			account_number as 'Konto',
@@ -2638,8 +2737,13 @@ def get_account_names(filters):
 		WHERE company = %(company)s
 		AND is_group = 0
 		AND account_number != ''
+		{number_filter}
+		ORDER BY account_number
 	""",
-		filters,
+		{
+			**filters,
+			"account_numbers": tuple(account_numbers) if account_numbers is not None else None,
+		},
 		as_dict=1,
 	)
 	return [cut_personenkonto_label(row, filters.get("account_number_length")) for row in accounts]
