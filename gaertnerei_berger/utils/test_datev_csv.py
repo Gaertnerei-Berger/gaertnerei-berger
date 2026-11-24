@@ -277,7 +277,9 @@ class TestPersonenkontoLabel(TestCase):
 	def test_personenkonto_label_is_cut_to_30(self):
 		from gaertnerei_berger.gb_datev.report.datev.datev import cut_personenkonto_label
 
-		row = cut_personenkonto_label({"Konto": "10006", "Kontenbeschriftung": "Förderverein Grundschule in der Stried"}, 4)
+		row = cut_personenkonto_label(
+			{"Konto": "10006", "Kontenbeschriftung": "Förderverein Grundschule in der Stried"}, 4
+		)
 		self.assertEqual(row["Kontenbeschriftung"], "Förderverein Grundschule in de")
 
 	def test_sachkonto_keeps_40(self):
