@@ -205,7 +205,6 @@ class TestPartyTaxIdField(TestCase):
 		settings = frappe.new_doc("DATEV Settings")
 		settings.update(
 			{
-				"buchungsstapel_export_mode": "consultant_booking",
 				"invoice_amount_basis": "gross",
 				"account_number_length": 4,
 				"ust_idnr_field": "customer_group",

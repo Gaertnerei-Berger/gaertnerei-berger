@@ -44,7 +44,6 @@ def export_filters(company, include_cancelled, storno_mode="generalumkehr"):
 		"to_date": today(),
 		"against_account": "9999",
 		"opening_account": "9998",
-		"buchungsstapel_export_mode": "consultant_booking",
 		"invoice_amount_basis": "net",
 		"payment_line_mode": "per_invoice",
 		"payment_belegfeld_1": "payment_entry",

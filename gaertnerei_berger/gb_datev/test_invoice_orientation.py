@@ -95,7 +95,6 @@ class InvoiceExportCase(TestCase):
 		export_filters = {
 			"company": "_Test GmbH",
 			"against_account": "9090",
-			"buchungsstapel_export_mode": "consultant_booking",
 			"invoice_amount_basis": "net",
 			**filters,
 		}

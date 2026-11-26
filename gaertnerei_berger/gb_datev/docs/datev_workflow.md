@@ -8,7 +8,7 @@ Use the **DATEV** page (`/app/datev`) as the main entry point for monthly Steuer
 2. Confirm the period defaults to the **previous calendar month** (same as the legacy report).
 3. Ensure all relevant vouchers for that month are submitted in ERPNext.
 4. Review configuration links if needed:
-   - DATEV Settings (export mode, 9090 account, BU keys)
+   - DATEV Settings (9090 account, Amount Basis, BU keys)
    - DATEV Mapping (one or more docs per voucher type: Receivable / Payable / Both — see [export_modes.md](export_modes.md))
    - DATEV Unternehmen Online Settings
 5. Click **Create DATEV Export**.
@@ -21,7 +21,7 @@ Each handoff creates a **DATEV Export** document with:
 - Company and period (`from_date` / `to_date`)
 - Who exported and when
 - Attached ZIP file
-- Row count and export mode snapshot
+- Row count and settings snapshot (always Consultant Booking, Amount Basis, Storno)
 
 If an export already exists for the same company and period, the page asks for confirmation before creating another file (for example after late voucher corrections).
 
