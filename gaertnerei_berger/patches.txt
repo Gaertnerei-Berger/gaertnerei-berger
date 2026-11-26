@@ -15,3 +15,4 @@ gaertnerei_berger.patches.post_model_sync.fix_invoice_mapping_both
 gaertnerei_berger.patches.post_model_sync.seed_journal_entry_transfer_mapping
 gaertnerei_berger.patches.post_model_sync.set_tax_category_type
 execute:frappe.db.delete("Custom Role", {"report": "DATEV"})
+gaertnerei_berger.patches.post_model_sync.drop_datev_settings_export_mode_column

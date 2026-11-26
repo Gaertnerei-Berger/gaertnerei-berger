@@ -87,7 +87,6 @@ class TestClearAutomaticAccountBuSchluessel(FrappeTestCase):
 		filters = {
 			"company": "_Test GmbH",
 			"against_account": "9090",
-			"buchungsstapel_export_mode": "consultant_booking",
 			"invoice_amount_basis": "gross",
 		}
 		with (
@@ -96,21 +95,6 @@ class TestClearAutomaticAccountBuSchluessel(FrappeTestCase):
 			patch(f"{DATEV_MODULE}.group_payment_entry_buchungsstapel", side_effect=lambda r, _f: r),
 			patch(f"{DATEV_MODULE}.group_journal_entry_buchungsstapel", side_effect=lambda r, _f: r),
 			patch(f"{DATEV_MODULE}.apply_buchungsstapel_mapping", side_effect=mapping_sets_bu),
-			patch(f"{DATEV_MODULE}.get_automatic_account_numbers", return_value={"8400"}),
-		):
-			rows = prepare_buchungsstapel_transactions(filters)
-
-		self.assertEqual(rows[0]["BU-Schlüssel"], "")
-
-	def test_runs_after_mapping_in_gl_mirror_mode(self):
-		filters = {
-			"company": "_Test GmbH",
-			"against_account": "9090",
-			"buchungsstapel_export_mode": "gl_mirror",
-		}
-		with (
-			patch(f"{DATEV_MODULE}.get_transactions", return_value=[booking("8400", "9090", "3")]),
-			patch(f"{DATEV_MODULE}.apply_buchungsstapel_mapping", side_effect=lambda r, _f: r),
 			patch(f"{DATEV_MODULE}.get_automatic_account_numbers", return_value={"8400"}),
 		):
 			rows = prepare_buchungsstapel_transactions(filters)
@@ -320,7 +304,6 @@ class TestAutomaticAccountExportPipeline(AutomaticAccountTestCase):
 		filters = {
 			"company": self.company.name,
 			"against_account": "9090",
-			"buchungsstapel_export_mode": "consultant_booking",
 			"invoice_amount_basis": "gross",
 		}
 		with (

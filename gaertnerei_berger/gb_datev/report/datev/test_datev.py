@@ -343,7 +343,6 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 				return_value={
 					"against_account": "9999",
 					"opening_account": "9998",
-					"buchungsstapel_export_mode": "consultant_booking",
 					"invoice_amount_basis": "net",
 				},
 			),
@@ -432,7 +431,6 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 				"account_number_length": 4,
 				"temporary_against_account_number": "9999",
 				"opening_against_account_number": "9998",
-				"buchungsstapel_export_mode": "consultant_booking",
 				"invoice_amount_basis": "net",
 			}
 		)
@@ -457,7 +455,6 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 				return_value={
 					"against_account": "9999",
 					"opening_account": "9998",
-					"buchungsstapel_export_mode": "consultant_booking",
 					"invoice_amount_basis": "net",
 				},
 			),
@@ -2725,8 +2722,9 @@ class TestDatevPaymentEntryGrouping(TestCase):
 		self.assertEqual(mapped[0]["Gegenkonto (ohne BU-Schlüssel)"], "1800")
 
 
-class TestDatevExportMode(TestCase):
-	def test_gl_mirror_mode_exports_raw_gl_with_9090_and_blank_bu(self):
+class TestDatevConsultantBooking(TestCase):
+	def test_stored_gl_mirror_value_still_groups(self):
+		# A DATEV Settings value left from the removed gl_mirror mode changes nothing (GitLab #117)
 		transactions = [
 			{
 				"Umsatz (ohne Soll/Haben-Kz)": 119,
@@ -2771,12 +2769,15 @@ class TestDatevExportMode(TestCase):
 			),
 			patch(
 				"gaertnerei_berger.gb_datev.report.datev.datev.group_sales_invoice_buchungsstapel",
+				side_effect=lambda rows, _filters: rows,
 			) as group_mock,
 			patch(
 				"gaertnerei_berger.gb_datev.report.datev.datev.group_payment_entry_buchungsstapel",
+				side_effect=lambda rows, _filters: rows,
 			) as payment_group_mock,
 			patch(
 				"gaertnerei_berger.gb_datev.report.datev.datev.group_journal_entry_buchungsstapel",
+				side_effect=lambda rows, _filters: rows,
 			) as journal_group_mock,
 			patch(
 				"gaertnerei_berger.gb_datev.report.datev.datev.apply_buchungsstapel_mapping",
@@ -2786,88 +2787,9 @@ class TestDatevExportMode(TestCase):
 			result = prepare_buchungsstapel_transactions(filters)
 
 		self.assertEqual(len(result), 3)
-		self.assertEqual(
-			{row["Gegenkonto (ohne BU-Schlüssel)"] for row in result},
-			{"9090"},
-		)
-		self.assertTrue(all(row["BU-Schlüssel"] == "" for row in result))
-		group_mock.assert_not_called()
-		payment_group_mock.assert_not_called()
-		journal_group_mock.assert_not_called()
-
-	def test_mapping_skipped_for_accounts_in_gl_mirror_mode(self):
-		transactions = [
-			{
-				"Konto": "4300",
-				"Gegenkonto (ohne BU-Schlüssel)": "9090",
-				"BU-Schlüssel": "",
-				"Umsatz (ohne Soll/Haben-Kz)": 100,
-				"Belegfeld 1": "ACC-SINV-2026-00003",
-				"Beleginfo - Art 1": "Sales Invoice",
-			}
-		]
-		sales_invoice = frappe.get_doc(
-			{
-				"doctype": "Sales Invoice",
-				"name": "ACC-SINV-2026-00003",
-				"custom_datev_account_no": "10111",
-				"items": [
-					{
-						"custom_datev_account_no": "4300",
-						"custom_bu_schlussel": "14",
-						"net_amount": 100,
-						"amount": 100,
-					}
-				],
-			}
-		)
-
-		with (
-			patch(
-				"gaertnerei_berger.gb_datev.report.datev.datev.get_buchungsstapel_mappings",
-				return_value={
-					"Sales Invoice": [
-						frappe._dict(
-							{
-								"map_to_field": "custom_datev_account_no",
-								"map_to_column": "Konto",
-							}
-						),
-						frappe._dict(
-							{
-								"map_to_field": "items.custom_datev_account_no",
-								"map_to_column": "Gegenkonto (ohne BU-Schlüssel)",
-							}
-						),
-						frappe._dict(
-							{
-								"map_to_field": "items.custom_bu_schlussel",
-								"map_to_column": "BU-Schlüssel",
-							}
-						),
-					]
-				},
-			),
-			patch(
-				"gaertnerei_berger.gb_datev.report.datev.datev.get_account_maps",
-				return_value=({}, {}),
-			),
-			patch(
-				"gaertnerei_berger.gb_datev.report.datev.datev.load_voucher_doc",
-				return_value=sales_invoice,
-			),
-		):
-			mapped = apply_buchungsstapel_mapping(
-				transactions,
-				{
-					"company": "My Company",
-					"buchungsstapel_export_mode": "gl_mirror",
-				},
-			)
-
-		self.assertEqual(mapped[0]["Konto"], "4300")
-		self.assertEqual(mapped[0]["Gegenkonto (ohne BU-Schlüssel)"], "9090")
-		self.assertEqual(mapped[0]["BU-Schlüssel"], "")
+		group_mock.assert_called_once()
+		payment_group_mock.assert_called_once()
+		journal_group_mock.assert_called_once()
 
 	def test_consultant_mode_gross_amount_basis(self):
 		item = {
@@ -3921,7 +3843,6 @@ class TestDatevPaymentEntryMultiInvoice(TestCase):
 				{
 					"company": "My Company",
 					"against_account": "9090",
-					"buchungsstapel_export_mode": "consultant_booking",
 					"payment_line_mode": "per_invoice",
 					"payment_belegfeld_1": "invoice",
 				}
