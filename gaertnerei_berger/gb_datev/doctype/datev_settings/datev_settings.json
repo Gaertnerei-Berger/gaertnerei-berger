@@ -32,6 +32,7 @@
   "storno_mode",
   "section_break_master_data",
   "steuernummer_field",
+  "disabled_party_mode",
   "column_break_master_data",
   "ust_idnr_field"
  ],
@@ -191,10 +192,10 @@
    "options": "generalumkehr\nswap_soll_haben"
   },
   {
+   "description": "Which Customer/Supplier field holds the Steuernummer and which the USt-IdNr (GitLab #114). Custom fields work too; the field must exist on both Customer and Supplier. Same field for both: a value starting with two letters (DE123…) is sent as USt-IdNr, any other as Steuernummer.",
    "fieldname": "section_break_master_data",
    "fieldtype": "Section Break",
-   "label": "Master Data (Debitoren/Kreditoren)",
-   "description": "Which Customer/Supplier field holds the Steuernummer and which the USt-IdNr (GitLab #114). Custom fields work too; the field must exist on both Customer and Supplier. Same field for both: a value starting with two letters (DE123…) is sent as USt-IdNr, any other as Steuernummer."
+   "label": "Master Data (Debitoren/Kreditoren)"
   },
   {
    "default": "tax_id",
@@ -202,6 +203,14 @@
    "fieldname": "steuernummer_field",
    "fieldtype": "Autocomplete",
    "label": "Steuernummer from Field"
+  },
+  {
+   "default": "export",
+   "description": "Disabled Customers/Suppliers that have bookings in the exported period. export: as any other party. export_inactive: DATEV Status = 1 (inaktiv); active parties keep their status in DATEV. leave_out: not in the Debitoren/Kreditoren file, listed under Master Data Warnings of the export.",
+   "fieldname": "disabled_party_mode",
+   "fieldtype": "Select",
+   "label": "Disabled Customers/Suppliers",
+   "options": "export\nexport_inactive\nleave_out"
   },
   {
    "fieldname": "column_break_master_data",
@@ -216,7 +225,7 @@
  ],
  "grid_page_length": 50,
  "links": [],
- "modified": "2026-11-26 12:00:00.000000",
+ "modified": "2026-11-26 15:00:00.000000",
  "modified_by": "Administrator",
  "module": "GB DATEV",
  "name": "DATEV Settings",

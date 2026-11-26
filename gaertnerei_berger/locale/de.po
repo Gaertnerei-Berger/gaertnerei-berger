@@ -411,3 +411,18 @@ msgstr "Einige Kunden oder Lieferanten haben keine Debitoren-/Kreditorennummer u
 #: gaertnerei_berger/gb_datev/report/datev/datev.py
 msgid "Personenkonto {0} is used in the Buchungsstapel but belongs to no Customer or Supplier"
 msgstr "Personenkonto {0} wird im Buchungsstapel verwendet, gehört aber zu keinem Kunden oder Lieferanten"
+
+#. Label of the disabled_party_mode (Select) field in DocType 'DATEV Settings'
+#: gaertnerei_berger/gb_datev/doctype/datev_settings/datev_settings.json
+msgid "Disabled Customers/Suppliers"
+msgstr "Deaktivierte Kunden/Lieferanten"
+
+#. Description of the 'Disabled Customers/Suppliers' (Select) field in DocType
+#. 'DATEV Settings'
+#: gaertnerei_berger/gb_datev/doctype/datev_settings/datev_settings.json
+msgid "Disabled Customers/Suppliers that have bookings in the exported period. export: as any other party. export_inactive: DATEV Status = 1 (inaktiv); active parties keep their status in DATEV. leave_out: not in the Debitoren/Kreditoren file, listed under Master Data Warnings of the export."
+msgstr "Deaktivierte Kunden/Lieferanten mit Buchungen im exportierten Zeitraum. export: wie alle anderen. export_inactive: DATEV-Status = 1 (inaktiv); aktive behalten ihren Status in DATEV. leave_out: nicht in der Debitoren-/Kreditorendatei, aufgeführt unter Hinweise zu Stammdaten des Exports."
+
+#: gaertnerei_berger/gb_datev/report/datev/datev.py
+msgid "{0} {1} is disabled and left out of the master data"
+msgstr "{0} {1} ist deaktiviert und nicht in den Stammdaten enthalten"
