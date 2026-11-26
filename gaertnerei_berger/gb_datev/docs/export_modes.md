@@ -1,8 +1,8 @@
-# DATEV Buchungsstapel Export Modes
+# DATEV Buchungsstapel Export
 
 Configure export behaviour in **DATEV Settings** under **Buchungsstapel Export**.
 
-Production mode is **Consultant Booking** only (Settings UI). Umsatz decimals are always **`,`**.
+The export always runs as **Consultant Booking**; there is no mode to pick (GitLab #117). Umsatz decimals are always **`,`**.
 
 See also [accepted_export_contract.md](accepted_export_contract.md) for the frozen orientation matrix.
 
@@ -65,7 +65,7 @@ How the export builds it:
 
 Agree the Storno mark with the Steuerberater before the first run.
 
-## Consultant Booking (`consultant_booking`)
+## Consultant Booking
 
 Default for Berger. Matches live exports such as `RG-260020`.
 
