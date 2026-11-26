@@ -63,6 +63,11 @@ UST_IDNR_KEY = "_ust_idnr"
 # Remark ERPNext writes on the GL rows that reverse a voucher (make_reverse_gl_entries)
 ERPNEXT_REVERSAL_REMARK = "On cancellation of "
 
+# DATEV Settings "Disabled Customers/Suppliers" (GitLab #76)
+DISABLED_PARTY_EXPORT = "export"
+DISABLED_PARTY_EXPORT_INACTIVE = "export_inactive"
+DISABLED_PARTY_LEAVE_OUT = "leave_out"
+
 # S/H of the Personenkonto on an invoice, by party type. The other side is a
 # Gutschrift or payment, where DATEV refuses a Fälligkeit (REW02890, GitLab #97)
 INVOICE_SIDE_BY_PARTY_TYPE = {"Customer": "S", "Supplier": "H"}
@@ -231,6 +236,7 @@ def get_datev_export_filter_values(company):
 		"storno_mode": settings.get("storno_mode") or STORNO_MODE_GENERALUMKEHR,
 		"steuernummer_field": settings.get("steuernummer_field"),
 		"ust_idnr_field": settings.get("ust_idnr_field"),
+		"disabled_party_mode": settings.get("disabled_party_mode") or DISABLED_PARTY_EXPORT,
 	}
 
 
@@ -474,7 +480,8 @@ def collect_used_master_data(transactions, filters):
 	is on Konto or Gegenkonto, so a number set by a DATEV Mapping is found too.
 	Personenkonten go to the Debitoren/Kreditoren files, the other numbers to
 	Kontenbeschriftungen. A used party without a Personenkonto cannot be
-	imported by DATEV; it is left out and reported in `warnings`.
+	imported by DATEV; it is left out and reported in `warnings`. So is a
+	disabled party when DATEV Settings say to leave disabled parties out.
 	"""
 	named = {"Customer": set(), "Supplier": set()}
 	numbers = set()
@@ -488,18 +495,30 @@ def collect_used_master_data(transactions, filters):
 		if party_type in named and row.get("Beleginfo - Inhalt 3"):
 			named[party_type].add(row.get("Beleginfo - Inhalt 3"))
 
+	leave_out_disabled = filters.get("disabled_party_mode") == DISABLED_PARTY_LEAVE_OUT
 	parties = {"Customer": set(), "Supplier": set()}
+	left_out = {"Customer": set(), "Supplier": set()}
 	party_numbers = set()
 	for row in get_personenkonten(filters, named, numbers):
-		if row.number:
+		if not row.number:
+			continue
+		# The number stays a Personenkonto either way: no Sachkonto label, no orphan
+		party_numbers.add(row.number)
+		if leave_out_disabled and cint(row.disabled):
+			left_out[row.party_type].add(row.party)
+		else:
 			parties[row.party_type].add(row.party)
-			party_numbers.add(row.number)
 
 	# Escaped: the warnings are shown as HTML on the DATEV Export form
 	warnings = [
 		_("{0} {1} has no Debitor/Kreditor number").format(_(party_type), escape_html(name))
 		for party_type, names in named.items()
-		for name in sorted(names - parties[party_type])
+		for name in sorted(names - parties[party_type] - left_out[party_type])
+	]
+	warnings += [
+		_("{0} {1} is disabled and left out of the master data").format(_(party_type), escape_html(name))
+		for party_type, names in left_out.items()
+		for name in sorted(names)
 	]
 
 	# A Personenkonto no party owns, e.g. an invoice booked on another party's
@@ -541,22 +560,27 @@ def get_personenkonten(filters, named, numbers):
 	"""
 	Party Account rows of the named parties or with one of the numbers.
 
-	Returns party_type, party and number (None when the party has no
-	Personenkonto for the company).
+	Returns party_type, party, number (None when the party has no
+	Personenkonto for the company) and disabled.
 	"""
 	customers = tuple(named.get("Customer") or ()) or ("",)
 	suppliers = tuple(named.get("Supplier") or ()) or ("",)
 	return frappe.db.sql(
 		"""
-		SELECT party_type, party, number
+		SELECT party_type, party, number, disabled
 		FROM (
 			SELECT
 				par.parenttype as party_type,
 				par.parent as party,
-				{personenkonto} as number
+				{personenkonto} as number,
+				COALESCE(cus.disabled, sup.disabled, 0) as disabled
 			FROM `tabParty Account` par
 			LEFT JOIN `tabAccount` pacc
 			ON pacc.name = par.account
+			LEFT JOIN `tabCustomer` cus
+			ON par.parenttype = 'Customer' AND cus.name = par.parent
+			LEFT JOIN `tabSupplier` sup
+			ON par.parenttype = 'Supplier' AND sup.name = par.parent
 			WHERE par.company = %(company)s
 			AND par.parenttype IN ('Customer', 'Supplier')
 		) personenkonto
@@ -2677,6 +2701,12 @@ def get_debtors_creditors(filters, party_type, names=None):
 		else ""
 	)
 	name_filter = f"AND {alias}.name IN %(names)s" if names is not None else ""
+	# Only disabled parties get a Status; DATEV keeps the status of the others
+	status = (
+		f", case {alias}.disabled when 1 then '1' else null end as 'Status'"
+		if filters.get("disabled_party_mode") == DISABLED_PARTY_EXPORT_INACTIVE
+		else ""
+	)
 	personenkonto = get_personenkonto_sql("par", "pacc")
 	steuernummer_field, ust_idnr_field = get_tax_id_fields(filters)
 	tax_id_columns = "".join(
@@ -2715,6 +2745,7 @@ def get_debtors_creditors(filters, party_type, names=None):
 			{alias}.website as 'Internet'
 			{tax_id_columns}
 			{zahlungssperre}
+			{status}
 
 		FROM `{table}` {alias}
 

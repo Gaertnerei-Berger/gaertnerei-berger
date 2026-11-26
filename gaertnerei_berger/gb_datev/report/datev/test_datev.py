@@ -16,6 +16,7 @@ from gaertnerei_berger.gb_datev.report.datev.datev import (
 	apply_payment_entry_belegfeld_1,
 	build_datev_export_filters,
 	collect_used_master_data,
+	get_debtors_creditors,
 	download_datev_csv,
 	get_datev_csv_files,
 	execute,
@@ -332,10 +333,33 @@ class TestDatev(TestCase):
 class TestCollectUsedMasterData(TestCase):
 	"""Edge cases of collect_used_master_data (GitLab #76)."""
 
-	def collect(self, transactions, personenkonten):
-		rows = [frappe._dict(party_type=t, party=p, number=n) for t, p, n in personenkonten]
+	def collect(self, transactions, personenkonten, disabled_party_mode="export"):
+		rows = [
+			frappe._dict(
+				party_type=row[0], party=row[1], number=row[2], disabled=row[3] if len(row) > 3 else 0
+			)
+			for row in personenkonten
+		]
+		filters = {"company": "X", "account_number_length": 4, "disabled_party_mode": disabled_party_mode}
 		with patch("gaertnerei_berger.gb_datev.report.datev.datev.get_personenkonten", return_value=rows):
-			return collect_used_master_data(transactions, {"company": "X", "account_number_length": 4})
+			return collect_used_master_data(transactions, filters)
+
+	def test_disabled_party_is_exported_by_default(self):
+		used = self.collect([{"Konto": "70003"}], [("Supplier", "Rufus", "70003", 1)])
+		self.assertEqual(used["parties"]["Supplier"], ["Rufus"])
+		self.assertEqual(used["warnings"], [])
+
+	def test_disabled_party_left_out_when_set(self):
+		"""Left out with a warning; its number is neither a Sachkonto nor an orphan."""
+		used = self.collect(
+			[{"Konto": "70003", "Gegenkonto (ohne BU-Schlüssel)": "1800"}],
+			[("Supplier", "Rufus", "70003", 1)],
+			disabled_party_mode="leave_out",
+		)
+		self.assertEqual(used["parties"]["Supplier"], [])
+		self.assertEqual(used["account_numbers"], ["1800"])
+		self.assertEqual(len(used["warnings"]), 1)
+		self.assertIn("disabled", used["warnings"][0])
 
 	def test_party_found_by_number_only(self):
 		"""A Personenkonto a DATEV Mapping put on Konto, without Beleginfo 3."""
@@ -371,6 +395,140 @@ class TestCollectUsedMasterData(TestCase):
 		self.assertEqual(used["account_numbers"], ["4400"])
 		self.assertEqual(len(used["warnings"]), 1)
 		self.assertIn("10999", used["warnings"][0])
+
+
+class TestDebtorsCreditorsRows(TestCase):
+	"""Konto and address of a Debitoren/Kreditoren row (GitLab #76)."""
+
+	def setUp(self):
+		self.company = make_company("_Test GmbH", "_TG")
+		self.filters = {"company": self.company.name, "account_number_length": 4}
+
+	def test_billing_address_when_no_primary_address(self):
+		customer = make_customer_without_bookings("_Test Kunde Rechnungsadresse", self.company.name, "10003")
+		make_address(customer.name, "Shipping", "Lagerweg 1")
+		make_address(customer.name, "Billing", "Rechnungsweg 2")
+
+		(row,) = get_debtors_creditors(self.filters, "Customer", [customer.name])
+
+		self.assertEqual(row["Konto"], "10003")
+		self.assertEqual(row["Straße"], "Rechnungsweg 2")
+
+	def test_primary_address_wins_over_billing_address(self):
+		customer = make_customer_without_bookings("_Test Kunde Hauptadresse", self.company.name, "10004")
+		make_address(customer.name, "Billing", "Rechnungsweg 2")
+		make_address(customer.name, "Shipping", "Hauptweg 3", is_primary_address=1)
+
+		(row,) = get_debtors_creditors(self.filters, "Customer", [customer.name])
+
+		self.assertEqual(row["Straße"], "Hauptweg 3")
+
+	def test_disabled_party_marked_inactive_when_set(self):
+		"""DATEV Status #245 = 1, unquoted; active parties get no Status."""
+		active = make_customer_without_bookings("_Test Kunde aktiv", self.company.name, "10008")
+		disabled = make_customer_without_bookings("_Test Kunde gesperrt", self.company.name, "10009")
+		frappe.db.set_value("Customer", disabled.name, "disabled", 1)
+		filters = {**self.filters, "disabled_party_mode": "export_inactive"}
+
+		rows = {
+			row["Konto"]: row
+			for row in get_debtors_creditors(filters, "Customer", [active.name, disabled.name])
+		}
+		self.assertEqual(rows["10009"]["Status"], "1")
+		self.assertIsNone(rows["10008"]["Status"])
+
+		csv_rows = {
+			line.split(";")[0]: line.split(";")
+			for line in get_datev_csv(
+				list(rows.values()), {**filters, "fiscal_year_start": today()}, DebtorsCreditors
+			)
+			.decode("cp1252")
+			.split("\r\n")[2:]
+			if line
+		}
+		status_index = DebtorsCreditors.COLUMNS.index("Status")
+		self.assertEqual(csv_rows["10009"][status_index], "1")
+		self.assertEqual(csv_rows["10008"][status_index], "")
+
+	def test_disabled_party_without_status_by_default(self):
+		disabled = make_customer_without_bookings("_Test Kunde gesperrt", self.company.name, "10009")
+		frappe.db.set_value("Customer", disabled.name, "disabled", 1)
+
+		(row,) = get_debtors_creditors(self.filters, "Customer", [disabled.name])
+
+		self.assertNotIn("Status", row)
+
+	def test_debtor_creditor_number_wins_over_own_account(self):
+		"""Same rule as get_party_account_number in the Buchungsstapel."""
+		customer = make_customer_with_own_account(
+			"_Test Kunde zwei Nummern", self.company, account_number="10006", debtor_number="10005"
+		)
+
+		(row,) = get_debtors_creditors(self.filters, "Customer", [customer.name])
+
+		self.assertEqual(row["Konto"], "10005")
+
+	def test_own_account_number_without_debtor_creditor_number(self):
+		"""The GitLab #53 setup: a Personenkonto per customer in the chart."""
+		customer = make_customer_with_own_account(
+			"_Test Kunde eigenes Konto", self.company, account_number="10007", debtor_number=""
+		)
+
+		(row,) = get_debtors_creditors(self.filters, "Customer", [customer.name])
+
+		self.assertEqual(row["Konto"], "10007")
+
+
+def make_address(customer, address_type, street, is_primary_address=0):
+	if frappe.db.exists("Address", {"address_line1": street, "address_title": customer}):
+		return
+	frappe.get_doc(
+		{
+			"doctype": "Address",
+			"address_title": customer,
+			"address_type": address_type,
+			"address_line1": street,
+			"city": "Berlin",
+			"country": "Germany",
+			"is_primary_address": is_primary_address,
+			"links": [{"link_doctype": "Customer", "link_name": customer}],
+		}
+	).insert()
+
+
+def make_customer_with_own_account(customer_name, company, account_number, debtor_number):
+	"""Customer whose Party Account points to its own receivable account."""
+	if frappe.db.exists("Customer", customer_name):
+		return frappe.get_doc("Customer", customer_name)
+
+	account = frappe.db.get_value("Account", {"account_number": account_number, "company": company.name})
+	if not account:
+		account = (
+			frappe.get_doc(
+				{
+					"doctype": "Account",
+					"parent_account": "1 - Forderungen aus Lieferungen und Leistungen - _TG",
+					"account_name": customer_name,
+					"account_number": account_number,
+					"company": company.name,
+					"account_type": "Receivable",
+				}
+			)
+			.insert()
+			.name
+		)
+
+	return frappe.get_doc(
+		{
+			"doctype": "Customer",
+			"customer_name": customer_name,
+			"customer_type": "Company",
+			"customer_group": frappe.db.get_value("Customer Group", {"is_group": 0}),
+			"accounts": [
+				{"company": company.name, "account": account, "debtor_creditor_number": debtor_number}
+			],
+		}
+	).insert()
 
 
 def set_debtor_creditor_number(customer, company, number):

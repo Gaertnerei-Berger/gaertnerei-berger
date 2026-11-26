@@ -127,6 +127,8 @@ def get_datev_csv(data, filters, csv_class):
 		# Before the length cut, so "D-64760" keeps all five digits (GitLab #116)
 		for column in POSTCODE_COLUMNS:
 			result[column] = result[column].map(clean_postcode)
+		# Status #245 is a digit, written without quotes (GitLab #76)
+		result["Status"] = result["Status"].map(as_datev_number).astype(object)
 
 	for column, max_length in getattr(csv_class, "MAX_LENGTHS", {}).items():
 		result[column] = result[column].map(lambda value, n=max_length: cut_text(value, n))
