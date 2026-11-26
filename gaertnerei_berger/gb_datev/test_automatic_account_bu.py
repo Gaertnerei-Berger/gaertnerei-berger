@@ -314,12 +314,13 @@ class TestAutomaticAccountExportPipeline(AutomaticAccountTestCase):
 		):
 			rows = prepare_buchungsstapel_transactions(filters)
 
-		return {row["Konto"]: row for row in rows}
+		# Invoice rows carry the Personenkonto on Konto, the item account on Gegenkonto
+		return {row["Gegenkonto (ohne BU-Schlüssel)"]: row for row in rows}
 
 	def test_without_flags_every_row_keeps_its_bu(self):
 		rows = self.export()
 		self.assertEqual(
-			{konto: row["BU-Schlüssel"] for konto, row in rows.items()},
+			{gegenkonto: row["BU-Schlüssel"] for gegenkonto, row in rows.items()},
 			{"4400": "3", "4200": "3", "5300": "8", "6520": "8"},
 		)
 
@@ -328,7 +329,7 @@ class TestAutomaticAccountExportPipeline(AutomaticAccountTestCase):
 		self.flag(self.wareneingang_account)
 		rows = self.export()
 		self.assertEqual(
-			{konto: row["BU-Schlüssel"] for konto, row in rows.items()},
+			{gegenkonto: row["BU-Schlüssel"] for gegenkonto, row in rows.items()},
 			{"4400": "", "4200": "3", "5300": "", "6520": "8"},
 		)
 
@@ -337,9 +338,9 @@ class TestAutomaticAccountExportPipeline(AutomaticAccountTestCase):
 		self.flag(self.wareneingang_account)
 		rows = self.export()
 		self.assertEqual(rows["4400"]["Umsatz (ohne Soll/Haben-Kz)"], Decimal("119.00"))
-		self.assertEqual(rows["4400"]["Soll/Haben-Kennzeichen"], "H")
+		self.assertEqual(rows["4400"]["Soll/Haben-Kennzeichen"], "S")
 		self.assertEqual(rows["5300"]["Umsatz (ohne Soll/Haben-Kz)"], Decimal("107.00"))
-		self.assertEqual(rows["5300"]["Soll/Haben-Kennzeichen"], "S")
+		self.assertEqual(rows["5300"]["Soll/Haben-Kennzeichen"], "H")
 
 	def test_mapping_cannot_bring_the_bu_back(self):
 		# Invoice BU Mapping only fills an empty BU, which is exactly what the

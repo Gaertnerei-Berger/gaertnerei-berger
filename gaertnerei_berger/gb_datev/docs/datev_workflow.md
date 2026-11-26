@@ -21,7 +21,7 @@ Each handoff creates a **DATEV Export** document with:
 - Company and period (`from_date` / `to_date`)
 - Who exported and when
 - Attached ZIP file
-- Row count and settings snapshot (always Consultant Booking, Amount Basis)
+- Row count and settings snapshot (always Consultant Booking, Amount Basis, Storno)
 
 If an export already exists for the same company and period, the page asks for confirmation before creating another file (for example after late voucher corrections).
 

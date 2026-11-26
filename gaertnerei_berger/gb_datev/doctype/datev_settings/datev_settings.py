@@ -5,6 +5,7 @@ from frappe import _, throw
 from frappe.model.document import Document
 
 from gaertnerei_berger.gb_datev.account import has_automatic_accounts, msgprint_net_amount_basis_warning
+from gaertnerei_berger.gb_datev.master_data import is_party_tax_id_field
 
 
 class DATEVSettings(Document):
@@ -40,6 +41,15 @@ class DATEVSettings(Document):
 
 		if self.payment_belegfeld_1 not in {"payment_entry", "invoice", None, ""}:
 			throw(_("Belegfeld 1 on Payment Lines must be payment_entry or invoice."))
+
+		for fieldname in ("steuernummer_field", "ust_idnr_field"):
+			value = self.get(fieldname)
+			if value and not is_party_tax_id_field(value):
+				throw(
+					_("{0}: {1} must be a Data field on both Customer and Supplier.").format(
+						_(self.meta.get_label(fieldname)), value
+					)
+				)
 
 		if self.invoice_amount_basis != "gross" and has_automatic_accounts(self.client):
 			msgprint_net_amount_basis_warning()

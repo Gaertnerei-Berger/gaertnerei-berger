@@ -15,15 +15,22 @@ from decimal import Decimal, ROUND_HALF_UP
 import frappe
 from erpnext.accounts.utils import get_fiscal_year
 from frappe import _
-from frappe.utils import cint, cstr, flt
+from frappe.utils import cint, cstr, escape_html, flt
 
+from gaertnerei_berger.gb_datev.master_data import is_party_tax_id_field
 from gaertnerei_berger.gb_datev.payment_entry import get_settings_bu_schluessel
 from gaertnerei_berger.utils.datev_constants import (
+	PERSONENKONTO_LABEL_MAX_LENGTH,
 	AccountNames,
 	DebtorsCreditors,
 	Transactions,
 )
-from gaertnerei_berger.utils.datev_csv import build_datev_zip_bytes, get_datev_csv, zip_and_download
+from gaertnerei_berger.utils.datev_csv import (
+	build_datev_zip_bytes,
+	cut_text,
+	get_datev_csv,
+	zip_and_download,
+)
 
 BUCHUNGSSTAPEL_REPORT = "EXTF_Buchungsstapel.csv"
 ACCOUNT_TAX_RATE_PATTERN = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
@@ -43,6 +50,22 @@ PAYMENT_LINES_PER_INVOICE = "per_invoice"
 PAYMENT_LINES_PER_PAYMENT = "per_payment"
 PAYMENT_BELEGFELD_PAYMENT_ENTRY = "payment_entry"
 PAYMENT_BELEGFELD_INVOICE = "invoice"
+
+# DATEV Settings "Include Cancelled Vouchers" / "Storno Rows" (GitLab #106)
+STORNO_MODE_GENERALUMKEHR = "generalumkehr"
+STORNO_MODE_SWAP_SOLL_HABEN = "swap_soll_haben"
+
+# Internal keys of a Debitoren/Kreditoren row, resolved in Python and never written (GitLab #114):
+# an Individual's full name, and the values of the DATEV Settings Steuernummer/USt-IdNr fields.
+PERSON_NAME_KEY = "_person_name"
+STEUERNUMMER_KEY = "_steuernummer"
+UST_IDNR_KEY = "_ust_idnr"
+# Remark ERPNext writes on the GL rows that reverse a voucher (make_reverse_gl_entries)
+ERPNEXT_REVERSAL_REMARK = "On cancellation of "
+
+# S/H of the Personenkonto on an invoice, by party type. The other side is a
+# Gutschrift or payment, where DATEV refuses a Fälligkeit (REW02890, GitLab #97)
+INVOICE_SIDE_BY_PARTY_TYPE = {"Customer": "S", "Supplier": "H"}
 
 UMSATZ_DECIMAL_COMMA = ","
 UMSATZ_DECIMAL_DOT = "."
@@ -204,6 +227,10 @@ def get_datev_export_filter_values(company):
 		"umsatz_decimal_separator": UMSATZ_DECIMAL_COMMA,
 		"payment_line_mode": settings.get("payment_line_mode") or PAYMENT_LINES_PER_INVOICE,
 		"payment_belegfeld_1": settings.get("payment_belegfeld_1") or PAYMENT_BELEGFELD_PAYMENT_ENTRY,
+		"include_cancelled": cint(settings.get("include_cancelled")),
+		"storno_mode": settings.get("storno_mode") or STORNO_MODE_GENERALUMKEHR,
+		"steuernummer_field": settings.get("steuernummer_field"),
+		"ust_idnr_field": settings.get("ust_idnr_field"),
 	}
 
 
@@ -229,10 +256,105 @@ def prepare_buchungsstapel_transactions(filters):
 	transactions = group_payment_entry_buchungsstapel(transactions, filters)
 	transactions = group_journal_entry_buchungsstapel(transactions, filters)
 	transactions = apply_buchungsstapel_mapping(transactions, filters)
+	transactions = keep_soll_haben_with_personenkonto(transactions)
+	# After mapping and the S/H follow-up, so the final S/H decides
+	transactions = clear_faelligkeit_off_invoice_side(transactions)
 	# After mapping: mapping finds the voucher by Belegfeld 1
 	transactions = apply_payment_entry_belegfeld_1(transactions, filters)
-	# Last, so neither grouping nor a DATEV Mapping can bring the BU back
-	return clear_automatic_account_bu_schluessel(transactions, filters)
+	# After grouping and mapping, so neither can bring the BU back
+	transactions = clear_automatic_account_bu_schluessel(transactions, filters)
+	# Last: a Storno mirrors the original's final row
+	return add_storno_rows(transactions, filters)
+
+
+def add_storno_rows(transactions, filters):
+	"""
+	Follow each row of a cancelled voucher with its Storno (GitLab #106).
+
+	The Storno keeps the original's date, accounts, BU and Belegfeld 1.
+	generalumkehr keeps Soll/Haben and sets Generalumkehr (GU) = 1;
+	swap_soll_haben swaps Soll/Haben instead. Rows only carry the cancelled
+	flag when DATEV Settings include cancelled vouchers.
+	"""
+	if not filters.get("include_cancelled"):
+		return transactions
+
+	result = []
+	for row in transactions:
+		result.append(row)
+		if row.get("_datev_cancelled"):
+			result.append(make_storno_row(row, filters.get("storno_mode")))
+
+	return result
+
+
+def make_storno_row(row, storno_mode):
+	storno = dict(row)
+	voucher_no = row.get("Beleginfo - Inhalt 1") or row.get("Belegfeld 1")
+	storno["Buchungstext"] = "Storno {}".format(voucher_no)[:60]
+	# A Storno is no new open item; DATEV rejects a Fälligkeit on it (GitLab #97)
+	storno["Fälligkeit"] = None
+	if storno_mode == STORNO_MODE_SWAP_SOLL_HABEN:
+		storno["Soll/Haben-Kennzeichen"] = "H" if row.get("Soll/Haben-Kennzeichen") == "S" else "S"
+	else:
+		storno["Generalumkehr (GU)"] = "1"
+	return storno
+
+
+def keep_soll_haben_with_personenkonto(transactions):
+	"""
+	Flip S/H on rows where DATEV Mapping moved the Personenkonto to the other column.
+
+	S/H refers to Konto (DATEV field #2). Grouping sets it for the column it put
+	the Debitor/Kreditor in (`_datev_party_column`). A Mapping that swaps Konto and
+	Gegenkonto keeps the booking only if S/H flips along; otherwise DATEV books the
+	invoice as a Gutschrift (GitLab #97).
+	"""
+	for row in transactions:
+		party_no = cstr(row.get("_datev_party_no"))
+		party_column = row.get("_datev_party_column")
+		if not party_no or party_column not in ACCOUNT_MAP_COLUMNS:
+			continue
+
+		other_column = next(column for column in ACCOUNT_MAP_COLUMNS if column != party_column)
+		if cstr(row.get(party_column)) == party_no or cstr(row.get(other_column)) != party_no:
+			continue
+
+		row["Soll/Haben-Kennzeichen"] = "H" if row.get("Soll/Haben-Kennzeichen") == "S" else "S"
+		row["_datev_party_column"] = other_column
+
+	return transactions
+
+
+def clear_faelligkeit_off_invoice_side(transactions):
+	"""
+	Drop the Fälligkeit where the Personenkonto is not on the invoice side (GitLab #97).
+
+	DATEV reads Debitor Soll / Kreditor Haben as an invoice and the other side as
+	a Gutschrift or payment, which may carry no Fälligkeit (REW02890). Deciding
+	per row, not per voucher, also covers negative lines on a normal invoice and
+	Is Paid / write-off rows, which copy the invoice's due date.
+
+	S/H refers to Konto, so it is read the other way round when the Personenkonto
+	sits on Gegenkonto. Raw GL rows (GL mirror, ungrouped vouchers) book the party
+	account on Konto. Rows without a Customer/Supplier keep their Fälligkeit.
+	"""
+	for row in transactions:
+		if not row.get("Fälligkeit"):
+			continue
+
+		invoice_side = INVOICE_SIDE_BY_PARTY_TYPE.get(row.get("Beleginfo - Art 3"))
+		if not invoice_side:
+			continue
+
+		party_side = row.get("Soll/Haben-Kennzeichen")
+		if (row.get("_datev_party_column") or "Konto") != "Konto":
+			party_side = "H" if party_side == "S" else "S"
+
+		if party_side != invoice_side:
+			row["Fälligkeit"] = None
+
+	return transactions
 
 
 def clear_automatic_account_bu_schluessel(transactions, filters):
@@ -303,12 +425,15 @@ def build_datev_export_filters(company, from_date, to_date, voucher_type=None):
 
 def get_datev_csv_files(filters):
 	transactions = prepare_buchungsstapel_transactions(filters)
-	account_names = get_account_names(filters)
-	customers = get_customers(filters)
-	suppliers = get_suppliers(filters)
+	# Master data only for what the Buchungsstapel uses (GitLab #76)
+	used = collect_used_master_data(transactions, filters)
+	account_names = get_account_names(filters, used["account_numbers"])
+	customers = get_customers(filters, used["parties"]["Customer"])
+	suppliers = get_suppliers(filters, used["parties"]["Supplier"])
 
 	return {
 		"transactions": transactions,
+		"master_data_warnings": used["warnings"],
 		"csv_files": [
 			{
 				"file_name": "EXTF_Buchungsstapel.csv",
@@ -337,7 +462,117 @@ def generate_datev_zip_payload(filters):
 		"zip_bytes": build_datev_zip_bytes(export_data["csv_files"]),
 		"zip_filename": zip_name,
 		"row_count": len(export_data["transactions"]),
+		"master_data_warnings": export_data["master_data_warnings"],
 	}
+
+
+def collect_used_master_data(transactions, filters):
+	"""
+	Customers, Suppliers and accounts the Buchungsstapel uses (GitLab #76).
+
+	A party counts when a row names it (Beleginfo 3) or when its Personenkonto
+	is on Konto or Gegenkonto, so a number set by a DATEV Mapping is found too.
+	Personenkonten go to the Debitoren/Kreditoren files, the other numbers to
+	Kontenbeschriftungen. A used party without a Personenkonto cannot be
+	imported by DATEV; it is left out and reported in `warnings`.
+	"""
+	named = {"Customer": set(), "Supplier": set()}
+	numbers = set()
+	for row in transactions:
+		for column in ACCOUNT_MAP_COLUMNS:
+			number = cstr(row.get(column)).strip()
+			if number:
+				numbers.add(number)
+
+		party_type = row.get("Beleginfo - Art 3")
+		if party_type in named and row.get("Beleginfo - Inhalt 3"):
+			named[party_type].add(row.get("Beleginfo - Inhalt 3"))
+
+	parties = {"Customer": set(), "Supplier": set()}
+	party_numbers = set()
+	for row in get_personenkonten(filters, named, numbers):
+		if row.number:
+			parties[row.party_type].add(row.party)
+			party_numbers.add(row.number)
+
+	# Escaped: the warnings are shown as HTML on the DATEV Export form
+	warnings = [
+		_("{0} {1} has no Debitor/Kreditor number").format(_(party_type), escape_html(name))
+		for party_type, names in named.items()
+		for name in sorted(names - parties[party_type])
+	]
+
+	# A Personenkonto no party owns, e.g. an invoice booked on another party's
+	# account. It is longer than a Sachkonto, so it does not belong into
+	# Kontenbeschriftungen either; DATEV would not know it.
+	account_number_length = cint(filters.get("account_number_length") or 4)
+	orphans = sorted(n for n in numbers - party_numbers if len(n) > account_number_length)
+	warnings += [
+		_("Personenkonto {0} is used in the Buchungsstapel but belongs to no Customer or Supplier").format(
+			escape_html(number)
+		)
+		for number in orphans
+	]
+
+	return {
+		"parties": {party_type: sorted(names) for party_type, names in parties.items()},
+		"account_numbers": sorted(numbers - party_numbers - set(orphans)),
+		"warnings": warnings,
+	}
+
+
+def get_personenkonto_sql(party_account_alias, account_alias):
+	"""
+	SQL for the Personenkonto of a Party Account row.
+
+	The Debtor/Creditor Number, else the number of the party's own account
+	(GitLab #53 setup), as the Buchungsstapel does in get_party_account_number.
+	A number no longer than a Sachkonto is a collective account, not a
+	Personenkonto.
+	"""
+	return (
+		f"COALESCE(NULLIF({party_account_alias}.debtor_creditor_number, ''), "
+		f"IF(CHAR_LENGTH({account_alias}.account_number) > %(account_number_length)s, "
+		f"{account_alias}.account_number, NULL))"
+	)
+
+
+def get_personenkonten(filters, named, numbers):
+	"""
+	Party Account rows of the named parties or with one of the numbers.
+
+	Returns party_type, party and number (None when the party has no
+	Personenkonto for the company).
+	"""
+	customers = tuple(named.get("Customer") or ()) or ("",)
+	suppliers = tuple(named.get("Supplier") or ()) or ("",)
+	return frappe.db.sql(
+		"""
+		SELECT party_type, party, number
+		FROM (
+			SELECT
+				par.parenttype as party_type,
+				par.parent as party,
+				{personenkonto} as number
+			FROM `tabParty Account` par
+			LEFT JOIN `tabAccount` pacc
+			ON pacc.name = par.account
+			WHERE par.company = %(company)s
+			AND par.parenttype IN ('Customer', 'Supplier')
+		) personenkonto
+		WHERE (party_type = 'Customer' AND party IN %(customers)s)
+		OR (party_type = 'Supplier' AND party IN %(suppliers)s)
+		OR number IN %(numbers)s
+		""".format(personenkonto=get_personenkonto_sql("par", "pacc")),
+		{
+			"company": filters.get("company"),
+			"account_number_length": cint(filters.get("account_number_length") or 4),
+			"customers": customers,
+			"suppliers": suppliers,
+			"numbers": tuple(numbers) or ("",),
+		},
+		as_dict=1,
+	)
 
 
 def get_existing_datev_export(company, from_date, to_date):
@@ -389,9 +624,55 @@ def get_recent_datev_exports(company, limit=10):
 	)
 
 
+# DATEV Settings that must be set before any export (GitLab #114)
+REQUIRED_EXPORT_SETTINGS = ("steuernummer_field", "ust_idnr_field")
+
+
+def get_missing_datev_settings(company):
+	"""Labels of the REQUIRED_EXPORT_SETTINGS that the company's DATEV Settings leave empty."""
+	values = get_required_export_setting_values(company) or {}
+	meta = frappe.get_meta("DATEV Settings")
+	return [_(meta.get_label(fieldname)) for fieldname in REQUIRED_EXPORT_SETTINGS if not values.get(fieldname)]
+
+
+def get_required_export_setting_values(company):
+	"""REQUIRED_EXPORT_SETTINGS of the company's DATEV Settings; None when there are none."""
+	if not company or not frappe.db.exists("DATEV Settings", company):
+		return None
+	return frappe.db.get_value("DATEV Settings", company, REQUIRED_EXPORT_SETTINGS, as_dict=True)
+
+
+@frappe.whitelist()
+def check_datev_settings(company):
+	"""For the DATEV page and report: what to show in the dialog before an export starts."""
+	frappe.only_for(["Accounts User", "Accounts Manager"])
+	missing = get_missing_datev_settings(company)
+	return {
+		"missing": missing,
+		"message": get_missing_settings_message(company, missing) if missing else "",
+		"settings_exist": get_required_export_setting_values(company) is not None,
+	}
+
+
+def get_missing_settings_message(company, missing):
+	items = "".join(f"<li>{frappe.utils.escape_html(label)}</li>" for label in missing)
+	return _(
+		"Before a DATEV export, set in DATEV Settings for {0} which Customer/Supplier field holds the "
+		"Steuernummer and which the USt-IdNr. Both may name the same field. Missing:"
+	).format(frappe.bold(frappe.utils.escape_html(company))) + f"<ul>{items}</ul>"
+
+
+def assert_datev_settings_complete(company):
+	"""Stop an export whose DATEV Settings miss a REQUIRED_EXPORT_SETTINGS field (GitLab #114)."""
+	missing = get_missing_datev_settings(company)
+	if missing:
+		frappe.throw(get_missing_settings_message(company, missing), title=_("DATEV Settings incomplete"))
+
+
 @frappe.whitelist()
 def create_datev_export(company, from_date, to_date, voucher_type=None, remarks=None, force=0):
 	frappe.only_for(["Accounts User", "Accounts Manager"])
+	assert_datev_settings_complete(company)
 
 	if not cint(force):
 		existing = get_existing_datev_export(company, from_date, to_date)
@@ -412,6 +693,8 @@ def create_datev_export(company, from_date, to_date, voucher_type=None, remarks=
 			"voucher_type": voucher_type or "",
 			"export_mode": EXPORT_MODE_CONSULTANT,
 			"invoice_amount_basis": settings.get("invoice_amount_basis"),
+			"include_cancelled": settings.get("include_cancelled"),
+			"storno_mode": settings.get("storno_mode") if settings.get("include_cancelled") else "",
 			"status": "Generated",
 		}
 	)
@@ -434,6 +717,7 @@ def create_datev_export(company, from_date, to_date, voucher_type=None, remarks=
 
 		export_doc.export_file = file_doc.file_url
 		export_doc.row_count = payload["row_count"]
+		export_doc.master_data_warnings = "\n".join(payload.get("master_data_warnings") or [])
 		export_doc.status = "Generated"
 		export_doc.save(ignore_permissions=True)
 	except Exception as error:
@@ -513,7 +797,93 @@ def get_transactions(filters, as_dict=1):
 		filters["exclude_voucher_types"] = type_map.keys()
 		transactions.extend(run(params_method=get_generic_params, filters=filters))
 
+	if filters.get("include_cancelled") and as_dict:
+		transactions = filter_cancelled_voucher_rows(transactions)
+
 	return sorted(transactions, key=sort_by)
+
+
+def filter_cancelled_voucher_rows(transactions):
+	"""
+	Keep what a cancelled voucher booked before it was cancelled (GitLab #106).
+
+	With "Include Cancelled Vouchers" the query also returns flagged and
+	reversal GL rows. Per voucher:
+	- submitted: rows with is_cancelled = 0, as without the setting
+	- cancelled: its last generation of original rows, flagged for the Storno.
+	  ERPNext's reversal rows are dropped; the export writes its own Storno.
+	  A Repost Accounting Ledger before the cancel leaves older generations,
+	  each followed by its reversal, so only originals newer than the last
+	  reversal before them count.
+	"""
+	rows_by_voucher = {}
+	for row in transactions:
+		key = (row.get("Beleginfo - Art 1"), row.get("Beleginfo - Inhalt 1"))
+		rows_by_voucher.setdefault(key, []).append(row)
+
+	docstatus_by_voucher = get_voucher_docstatus(rows_by_voucher)
+
+	result = []
+	for voucher_key, rows in rows_by_voucher.items():
+		# A voucher that no longer exists keeps the behaviour without the setting
+		docstatus = docstatus_by_voucher.get(voucher_key, 1)
+
+		if docstatus == 1:
+			result.extend(row for row in rows if not cint(row.get("_datev_gl_is_cancelled")))
+		elif docstatus == 2:
+			result.extend(get_cancelled_voucher_original_rows(rows))
+
+	return result
+
+
+def get_voucher_docstatus(voucher_keys):
+	"""docstatus per (voucher_type, voucher_no), one query per voucher type."""
+	names_by_type = {}
+	for voucher_type, voucher_no in voucher_keys:
+		if voucher_type and voucher_no:
+			names_by_type.setdefault(voucher_type, []).append(voucher_no)
+
+	docstatus_by_voucher = {}
+	for voucher_type, names in names_by_type.items():
+		# GL rows of an uninstalled app's doctype: keep the behaviour without the setting
+		if not frappe.db.exists("DocType", voucher_type):
+			continue
+
+		for voucher in frappe.get_all(
+			voucher_type, filters={"name": ["in", names]}, fields=["name", "docstatus"]
+		):
+			docstatus_by_voucher[(voucher_type, voucher.name)] = cint(voucher.docstatus)
+
+	return docstatus_by_voucher
+
+
+def get_cancelled_voucher_original_rows(rows):
+	originals = [row for row in rows if not row.get("_datev_gl_reversal")]
+	if not originals:
+		return []
+
+	latest_original = max(row.get("_datev_gl_creation") for row in originals)
+	earlier_reversals = [
+		row.get("_datev_gl_creation")
+		for row in rows
+		if row.get("_datev_gl_reversal") and row.get("_datev_gl_creation") < latest_original
+	]
+	if earlier_reversals:
+		last_reversal = max(earlier_reversals)
+		originals = [row for row in originals if row.get("_datev_gl_creation") > last_reversal]
+
+	for row in originals:
+		row["_datev_cancelled"] = True
+
+	return originals
+
+
+def get_voucher_docstatus_filter(alias, filters):
+	"""Submitted vouchers; with "Include Cancelled Vouchers" also cancelled ones."""
+	if filters.get("include_cancelled"):
+		return "AND {}.docstatus IN (1, 2)".format(alias)
+
+	return "AND {}.docstatus = 1".format(alias)
 
 
 def group_sales_invoice_buchungsstapel(transactions, filters):
@@ -552,12 +922,12 @@ def get_grouped_invoice_rows(voucher_type, voucher_no, voucher_rows, filters):
 		return voucher_rows
 
 	base_row = get_invoice_base_row(voucher_rows)
-	gegenkonto = get_invoice_gegenkonto(voucher_type, voucher_doc, base_row, filters)
+	party_konto = get_invoice_party_konto(voucher_type, voucher_doc, base_row, filters)
 	grouped_rows = {}
 
 	for item in voucher_doc.get("items") or []:
-		konto = get_invoice_item_konto(voucher_type, item, filters.get("company"))
-		if not konto:
+		item_konto = get_invoice_item_konto(voucher_type, item, filters.get("company"))
+		if not item_konto:
 			continue
 
 		amount = get_invoice_item_amount(item, filters)
@@ -566,14 +936,14 @@ def get_grouped_invoice_rows(voucher_type, voucher_no, voucher_rows, filters):
 
 		bu_schluessel = item.get("custom_bu_schlussel") or ""
 		tax_grouping_key = get_invoice_item_tax_grouping_key(item)
-		group_key = (konto, tax_grouping_key)
+		group_key = (item_konto, tax_grouping_key)
 
 		if group_key not in grouped_rows:
 			grouped_rows[group_key] = make_grouped_invoice_row(
 				voucher_type=voucher_type,
 				base_row=base_row,
-				konto=konto,
-				gegenkonto=gegenkonto,
+				party_konto=party_konto,
+				item_konto=item_konto,
 				bu_schluessel=bu_schluessel,
 				amount=amount,
 			)
@@ -588,7 +958,7 @@ def get_grouped_invoice_rows(voucher_type, voucher_no, voucher_rows, filters):
 
 	if grouped_rows:
 		rows = list(grouped_rows.values())
-		rows.extend(get_invoice_settlement_rows(voucher_type, voucher_doc, base_row, gegenkonto, filters))
+		rows.extend(get_invoice_settlement_rows(voucher_type, voucher_doc, base_row, party_konto, filters))
 		return rows
 
 	return voucher_rows
@@ -602,7 +972,8 @@ def get_invoice_base_row(voucher_rows):
 	return dict(voucher_rows[0])
 
 
-def get_invoice_gegenkonto(voucher_type, voucher_doc, base_row, filters):
+def get_invoice_party_konto(voucher_type, voucher_doc, base_row, filters):
+	"""Debitor/Kreditor number of the invoice party (DATEV Konto on invoice rows)."""
 	if voucher_type == "Sales Invoice":
 		return get_party_account_number(
 			party_type="Customer",
@@ -729,13 +1100,23 @@ def normalize_invoice_grouping_value(value):
 	return str(value)
 
 
-def make_grouped_invoice_row(voucher_type, base_row, konto, gegenkonto, bu_schluessel, amount):
+def make_grouped_invoice_row(voucher_type, base_row, party_konto, item_konto, bu_schluessel, amount):
+	"""
+	Invoice row in DATEV orientation: Personenkonto on Konto, item account on Gegenkonto.
+
+	S/H refers to Konto (DATEV field #2), so the Debitor is Soll and the
+	Kreditor Haben on a normal invoice (GitLab #97). The BU-Schlüssel belongs
+	to the Gegenkonto, where the Erlös/Aufwand account is.
+	"""
 	row = dict(base_row)
 	row["Umsatz (ohne Soll/Haben-Kz)"] = abs(amount)
 	row["Soll/Haben-Kennzeichen"] = get_grouped_invoice_amount_indicator(voucher_type, amount)
-	row["Konto"] = konto
-	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
+	row["Konto"] = party_konto
+	row["Gegenkonto (ohne BU-Schlüssel)"] = item_konto
 	row["BU-Schlüssel"] = bu_schluessel
+	row["_datev_invoice_row"] = True
+	row["_datev_party_no"] = party_konto
+	row["_datev_party_column"] = "Konto"
 	return row
 
 
@@ -796,14 +1177,18 @@ def make_invoice_settlement_row(base_row, konto, gegenkonto, amount, bu_schluess
 	row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
 	row["BU-Schlüssel"] = bu_schluessel
 	row["_datev_settlement_row"] = True
+	# Kreditor on Konto, S: a payment, so clear_faelligkeit_off_invoice_side drops the due date
+	row["_datev_party_no"] = konto
+	row["_datev_party_column"] = "Konto"
 	return row
 
 
 def get_grouped_invoice_amount_indicator(voucher_type, amount):
+	"""S/H for the Personenkonto on Konto; negative amounts (returns) flip."""
 	if voucher_type == "Purchase Invoice":
-		return "S" if amount >= 0 else "H"
+		return "H" if amount >= 0 else "S"
 
-	return "H" if amount >= 0 else "S"
+	return "S" if amount >= 0 else "H"
 
 
 def get_party_first_amount_indicator(direction, amount):
@@ -1086,7 +1471,8 @@ def get_grouped_journal_entry_rows(voucher_no, voucher_rows, filters):
 		if not business_no:
 			return voucher_rows
 
-		# SI/PI orientation: Konto = business (Erlös/Aufwand), Gegenkonto = party
+		# Erlös/Aufwand on Konto, party on Gegenkonto; invoices use the mirrored
+		# layout, the booking is the same (GitLab #97)
 		konto, gegenkonto = business_no, party_no
 		export_amount = get_journal_entry_export_amount(
 			business_row, tax_row, filters, voucher_doc.company
@@ -1100,6 +1486,8 @@ def get_grouped_journal_entry_rows(voucher_no, voucher_rows, filters):
 		grouped_row["Konto"] = konto
 		grouped_row["Gegenkonto (ohne BU-Schlüssel)"] = gegenkonto
 		grouped_row["BU-Schlüssel"] = get_business_row_bu_schluessel(business_row, tax_row)
+		grouped_row["_datev_party_no"] = party_no
+		grouped_row["_datev_party_column"] = "Gegenkonto (ohne BU-Schlüssel)"
 		grouped_rows.append(grouped_row)
 
 	return merge_journal_entry_datev_rows(grouped_rows)
@@ -1591,8 +1979,8 @@ def get_payment_entry_params(filters):
 
 	extra_filters = """
 		AND gl.voucher_type = 'Payment Entry'
-		AND pe.docstatus = 1
-	"""
+		{docstatus_filter}
+	""".format(docstatus_filter=get_voucher_docstatus_filter("pe", filters))
 
 	return extra_fields, extra_joins, extra_filters
 
@@ -1603,7 +1991,8 @@ def get_sales_invoice_params(filters):
 		, '' as 'Beleginfo - Inhalt 5'
 		, '' as 'Beleginfo - Art 6'
 		, '' as 'Beleginfo - Inhalt 6'
-		, si.due_date as 'Fälligkeit'
+		-- DATEV allows no Fälligkeit on a Gutschrift (REW02890, GitLab #97)
+		, CASE WHEN si.is_return = 1 THEN NULL ELSE si.due_date END as 'Fälligkeit'
 	"""
 
 	extra_joins = """
@@ -1613,19 +2002,21 @@ def get_sales_invoice_params(filters):
 
 	extra_filters = """
 		AND gl.voucher_type = 'Sales Invoice'
-		AND si.docstatus = 1
-	"""
+		{docstatus_filter}
+	""".format(docstatus_filter=get_voucher_docstatus_filter("si", filters))
 
 	return extra_fields, extra_joins, extra_filters
 
 
 def get_purchase_invoice_params(filters):
 	extra_fields = """
-		, 'Lieferanten-Rechnungsnummer' as 'Beleginfo - Art 5'
+		-- Beleginfo - Art takes 20 characters (REW00967, GitLab #113)
+		, 'Lief.-Rechnungsnr.' as 'Beleginfo - Art 5'
 		, pi.bill_no as 'Beleginfo - Inhalt 5'
-		, 'Lieferanten-Rechnungsdatum' as 'Beleginfo - Art 6'
+		, 'Lief.-Rechnungsdatum' as 'Beleginfo - Art 6'
 		, pi.bill_date as 'Beleginfo - Inhalt 6'
-		, pi.due_date as 'Fälligkeit'
+		-- DATEV allows no Fälligkeit on a Gutschrift (REW02890, GitLab #97)
+		, CASE WHEN pi.is_return = 1 THEN NULL ELSE pi.due_date END as 'Fälligkeit'
 	"""
 
 	extra_joins = """
@@ -1635,8 +2026,8 @@ def get_purchase_invoice_params(filters):
 
 	extra_filters = """
 		AND gl.voucher_type = 'Purchase Invoice'
-		AND pi.docstatus = 1
-	"""
+		{docstatus_filter}
+	""".format(docstatus_filter=get_voucher_docstatus_filter("pi", filters))
 
 	return extra_fields, extra_joins, extra_filters
 
@@ -1657,8 +2048,8 @@ def get_journal_entry_params(filters):
 
 	extra_filters = """
 		AND gl.voucher_type = 'Journal Entry'
-		AND je.docstatus = 1
-	"""
+		{docstatus_filter}
+	""".format(docstatus_filter=get_voucher_docstatus_filter("je", filters))
 
 	return extra_fields, extra_joins, extra_filters
 
@@ -1698,6 +2089,7 @@ def run_query(filters, extra_fields, extra_joins, extra_filters, as_dict=1):
 	as_dict -- return as list of dicts [0,1]
 	"""
 	ensure_datev_query_filter_defaults(filters)
+	cancelled_fields, cancelled_filter = get_cancelled_query_parts(filters)
 	query = """
 		SELECT
 
@@ -1728,6 +2120,7 @@ def run_query(filters, extra_fields, extra_joins, extra_filters, as_dict=1):
 			case gl.party_type when 'Customer' then 'Debitorennummer' when 'Supplier' then 'Kreditorennummer' else NULL end as 'Beleginfo - Art 4',
 			par.debtor_creditor_number as 'Beleginfo - Inhalt 4'
 
+			{cancelled_fields}
 			{extra_fields}
 
 		FROM `tabGL Entry` gl
@@ -1746,17 +2139,39 @@ def run_query(filters, extra_fields, extra_joins, extra_filters, as_dict=1):
 		WHERE gl.company = %(company)s
 		AND DATE(gl.posting_date) >= %(from_date)s
 		AND DATE(gl.posting_date) <= %(to_date)s
-		AND IFNULL(gl.is_cancelled, 0) = 0
+		{cancelled_filter}
 
 		{extra_filters}
 
 		ORDER BY 'Belegdatum', gl.voucher_no""".format(
-		extra_fields=extra_fields, extra_joins=extra_joins, extra_filters=extra_filters
+		cancelled_fields=cancelled_fields,
+		cancelled_filter=cancelled_filter,
+		extra_fields=extra_fields,
+		extra_joins=extra_joins,
+		extra_filters=extra_filters,
 	)
 
 	gl_entries = frappe.db.sql(query, filters, as_dict=as_dict)
 
 	return gl_entries
+
+
+def get_cancelled_query_parts(filters):
+	"""
+	Without "Include Cancelled Vouchers" cancelled GL rows stay out in SQL.
+
+	With it, all rows come back with what filter_cancelled_voucher_rows needs
+	to pick a cancelled voucher's originals.
+	"""
+	if not filters.get("include_cancelled"):
+		return "", "AND IFNULL(gl.is_cancelled, 0) = 0"
+
+	fields = """
+			, IFNULL(gl.is_cancelled, 0) as '_datev_gl_is_cancelled'
+			, IFNULL(gl.remarks, '') = CONCAT('{remark}', gl.voucher_no) as '_datev_gl_reversal'
+			, gl.creation as '_datev_gl_creation'
+	""".format(remark=ERPNEXT_REVERSAL_REMARK)
+	return fields, ""
 
 
 def apply_buchungsstapel_mapping(transactions, filters):
@@ -1826,6 +2241,10 @@ def apply_buchungsstapel_mapping(transactions, filters):
 
 			target_column = get_mapping_target_column(row, mapping.get("map_to_column"))
 			if not target_column:
+				continue
+
+			if target_column == "Fälligkeit" and cint(voucher_doc.get("is_return")):
+				# DATEV allows no Fälligkeit on a Gutschrift (REW02890, GitLab #97)
 				continue
 
 			value = resolve_map_to_value(
@@ -1906,23 +2325,22 @@ def get_mapping_target_column(row, map_to_column):
 	"""
 	Column a mapping writes to on this row, or None to skip it.
 
-	Settlement rows (Is Paid, write-off) keep their own Kasse/Bank/write-off
-	account, BU and Umsatz. The invoice's Kreditor mapping (Gegenkonto on PI
-	rows) lands on their Konto, so payment and invoice use the same Kreditor.
+	Grouped invoice rows keep the accounts grouping set (Personenkonto on Konto,
+	item account on Gegenkonto). A Mapping that moved one of them would not
+	move S/H along, and DATEV would read the invoice as a Gutschrift (GitLab #97).
+
+	Settlement rows (Is Paid, write-off) keep their own accounts, BU and Umsatz.
 	"""
 	if row.get("_datev_payment_line") and map_to_column == "Umsatz (ohne Soll/Haben-Kz)":
 		# Per-invoice payment line keeps its allocated amount, not paid_amount
 		return None
 
-	if not row.get("_datev_settlement_row"):
-		return map_to_column
+	if row.get("_datev_invoice_row") and map_to_column in ACCOUNT_MAP_COLUMNS:
+		return None
 
-	# Purchase orientation only; Sales Invoice POS rows (GitLab #99) carry the
-	# Debitor on Gegenkonto and would need their own rule here.
-	if map_to_column == "Gegenkonto (ohne BU-Schlüssel)":
-		return "Konto"
-
-	if map_to_column in {"Konto", "BU-Schlüssel", "Umsatz (ohne Soll/Haben-Kz)"}:
+	if row.get("_datev_settlement_row") and map_to_column in (
+		ACCOUNT_MAP_COLUMNS | {"BU-Schlüssel", "Umsatz (ohne Soll/Haben-Kz)"}
+	):
 		return None
 
 	return map_to_column
@@ -2214,31 +2632,74 @@ def normalize_mapped_umsatz(value):
 	return Decimal(str(flt(value))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def get_customers(filters):
+def get_customers(filters, customers=None):
 	"""
-	Get a list of Customers.
+	Debitoren for the EXTF_Kunden file.
 
 	Arguments:
 	filters -- dict of filters to be passed to the sql query
+	customers -- Customer names to export; only these (GitLab #76). None: all.
 	"""
-	return frappe.db.sql(
-		"""
+	return get_debtors_creditors(filters, "Customer", customers)
+
+
+def get_suppliers(filters, suppliers=None):
+	"""
+	Kreditoren for the EXTF_Lieferanten file.
+
+	Arguments:
+	filters -- dict of filters to be passed to the sql query
+	suppliers -- Supplier names to export; only these (GitLab #76). None: all.
+	"""
+	return get_debtors_creditors(filters, "Supplier", suppliers)
+
+
+def get_debtors_creditors(filters, party_type, names=None):
+	"""
+	Debitoren/Kreditoren rows of one party type.
+
+	Only parties with a Personenkonto (see get_personenkonto_sql): DATEV
+	rejects a record without Konto. The address is the primary one, else a
+	billing address, else none, so a Personenkonto used in the Buchungsstapel
+	is never missing from the file.
+	"""
+	if names is not None and not names:
+		return []
+
+	# party_type is "Customer" or "Supplier", never user input
+	table, alias, type_field, name_field = {
+		"Customer": ("tabCustomer", "cus", "customer_type", "customer_name"),
+		"Supplier": ("tabSupplier", "sup", "supplier_type", "supplier_name"),
+	}[party_type]
+	zahlungssperre = (
+		f", case {alias}.on_hold when 1 then {alias}.release_date else null end as 'Zahlungssperre bis'"
+		if party_type == "Supplier"
+		else ""
+	)
+	name_filter = f"AND {alias}.name IN %(names)s" if names is not None else ""
+	personenkonto = get_personenkonto_sql("par", "pacc")
+	steuernummer_field, ust_idnr_field = get_tax_id_fields(filters)
+	tax_id_columns = "".join(
+		f", {alias}.`{fieldname}` as '{key}'"
+		for fieldname, key in ((steuernummer_field, STEUERNUMMER_KEY), (ust_idnr_field, UST_IDNR_KEY))
+		if fieldname
+	)
+
+	rows = frappe.db.sql(
+		f"""
 		SELECT
 
-			par.debtor_creditor_number as 'Konto',
-			CASE cus.customer_type
-				WHEN 'Company' THEN cus.customer_name
+			{personenkonto} as 'Konto',
+			CASE {alias}.{type_field}
+				WHEN 'Company' THEN {alias}.{name_field}
 				ELSE null
 				END as 'Name (Adressatentyp Unternehmen)',
-			CASE cus.customer_type
-				WHEN 'Individual' THEN TRIM(SUBSTR(cus.customer_name, LOCATE(' ', cus.customer_name)))
+			/* split into Vorname/Nachname by split_person_name */
+			CASE {alias}.{type_field}
+				WHEN 'Individual' THEN {alias}.{name_field}
 				ELSE null
-				END as 'Name (Adressatentyp natürl. Person)',
-			CASE cus.customer_type
-				WHEN 'Individual' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(cus.customer_name, ' ', 1), ' ', -1)
-				ELSE null
-				END as 'Vorname (Adressatentyp natürl. Person)',
-			CASE cus.customer_type
+				END as '{PERSON_NAME_KEY}',
+			CASE {alias}.{type_field}
 				WHEN 'Individual' THEN '1'
 				WHEN 'Company' THEN '2'
 				ELSE '0'
@@ -2251,105 +2712,148 @@ def get_customers(filters):
 			adr.email_id as 'E-Mail',
 			adr.phone as 'Telefon',
 			adr.fax as 'Fax',
-			cus.website as 'Internet',
-			cus.tax_id as 'Steuernummer'
+			{alias}.website as 'Internet'
+			{tax_id_columns}
+			{zahlungssperre}
 
-		FROM `tabCustomer` cus
+		FROM `{table}` {alias}
 
-			left join `tabParty Account` par
-			on par.parent = cus.name
-			and par.parenttype = 'Customer'
+			join `tabParty Account` par
+			on par.parent = {alias}.name
+			and par.parenttype = %(party_type)s
 			and par.company = %(company)s
 
-			left join `tabDynamic Link` dyn_adr
-			on dyn_adr.link_name = cus.name
-			and dyn_adr.link_doctype = 'Customer'
-			and dyn_adr.parenttype = 'Address'
+			left join `tabAccount` pacc
+			on pacc.name = par.account
 
+			/* primary address, else a billing address, else none */
 			left join `tabAddress` adr
-			on adr.name = dyn_adr.parent
-			and adr.is_primary_address = '1'
+			on adr.name = (
+				SELECT a.name
+				FROM `tabAddress` a
+				JOIN `tabDynamic Link` dl
+				ON dl.parent = a.name
+				AND dl.parenttype = 'Address'
+				AND dl.link_doctype = %(party_type)s
+				AND dl.link_name = {alias}.name
+				WHERE a.disabled = 0
+				ORDER BY a.is_primary_address DESC, (a.address_type = 'Billing') DESC, a.creation
+				LIMIT 1
+			)
 
 			left join `tabCountry` country
 			on country.name = adr.country
 
-		WHERE adr.is_primary_address = '1'
+		WHERE {personenkonto} IS NOT NULL
+		{name_filter}
+		ORDER BY 1
 		""",
-		filters,
+		{
+			**filters,
+			"account_number_length": cint(filters.get("account_number_length") or 4),
+			"party_type": party_type,
+			"names": tuple(names) if names is not None else None,
+		},
 		as_dict=1,
 	)
 
+	same_field = bool(steuernummer_field) and steuernummer_field == ust_idnr_field
+	for row in rows:
+		vorname, nachname = split_person_name(row.pop(PERSON_NAME_KEY, None))
+		row["Vorname (Adressatentyp natürl. Person)"] = vorname
+		row["Name (Adressatentyp natürl. Person)"] = nachname
+		row.update(
+			get_tax_id_columns(
+				row.pop(STEUERNUMMER_KEY, None), row.pop(UST_IDNR_KEY, None), same_field, row.get("Land")
+			)
+		)
+	return rows
 
-def get_suppliers(filters):
+
+def get_tax_id_fields(filters):
 	"""
-	Get a list of Suppliers.
+	Customer/Supplier fieldnames for Steuernummer and USt-IdNr from DATEV Settings (GitLab #114).
 
-	Arguments:
-	filters -- dict of filters to be passed to the sql query
+	Not set in filters at all (reports, tests): tax_id as Steuernummer, as before.
+	A name that is no text field on both doctypes is left out, since it goes
+	into the SQL as a column; DATEV Settings refuses to save such a name anyway.
 	"""
-	return frappe.db.sql(
-		"""
-		SELECT
+	if "steuernummer_field" not in filters and "ust_idnr_field" not in filters:
+		return "tax_id", None
 
-			par.debtor_creditor_number as 'Konto',
-			CASE sup.supplier_type
-				WHEN 'Company' THEN sup.supplier_name
-				ELSE null
-				END as 'Name (Adressatentyp Unternehmen)',
-			CASE sup.supplier_type
-				WHEN 'Individual' THEN TRIM(SUBSTR(sup.supplier_name, LOCATE(' ', sup.supplier_name)))
-				ELSE null
-				END as 'Name (Adressatentyp natürl. Person)',
-			CASE sup.supplier_type
-				WHEN 'Individual' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(sup.supplier_name, ' ', 1), ' ', -1)
-				ELSE null
-				END as 'Vorname (Adressatentyp natürl. Person)',
-			CASE sup.supplier_type
-				WHEN 'Individual' THEN '1'
-				WHEN 'Company' THEN '2'
-				ELSE '0'
-				END as 'Adressatentyp',
-			adr.address_line1 as 'Straße',
-			adr.pincode as 'Postleitzahl',
-			adr.city as 'Ort',
-			UPPER(country.code) as 'Land',
-			adr.address_line2 as 'Adresszusatz',
-			adr.email_id as 'E-Mail',
-			adr.phone as 'Telefon',
-			adr.fax as 'Fax',
-			sup.website as 'Internet',
-			sup.tax_id as 'Steuernummer',
-			case sup.on_hold when 1 then sup.release_date else null end as 'Zahlungssperre bis'
-
-		FROM `tabSupplier` sup
-
-			left join `tabParty Account` par
-			on par.parent = sup.name
-			and par.parenttype = 'Supplier'
-			and par.company = %(company)s
-
-			left join `tabDynamic Link` dyn_adr
-			on dyn_adr.link_name = sup.name
-			and dyn_adr.link_doctype = 'Supplier'
-			and dyn_adr.parenttype = 'Address'
-
-			left join `tabAddress` adr
-			on adr.name = dyn_adr.parent
-			and adr.is_primary_address = '1'
-
-			left join `tabCountry` country
-			on country.name = adr.country
-
-		WHERE adr.is_primary_address = '1'
-		""",
-		filters,
-		as_dict=1,
+	return tuple(
+		fieldname if is_party_tax_id_field(fieldname) else None
+		for fieldname in (filters.get("steuernummer_field"), filters.get("ust_idnr_field"))
 	)
 
 
-def get_account_names(filters):
-	return frappe.db.sql(
-		"""
+def get_tax_id_columns(steuernummer, ust_idnr, same_field=False, country_code=None):
+	"""
+	DATEV Steuernummer / EU-Land / EU-USt-IdNr. of one party (GitLab #114).
+
+	Same field for both: a value with a two-letter prefix (DE123…) is a
+	USt-IdNr, any other a Steuernummer.
+	"""
+	if same_field:
+		value = cstr(steuernummer).strip()
+		if is_ust_idnr(value):
+			return split_ust_idnr(value, country_code)
+		return {"Steuernummer": value or None}
+
+	columns = {"Steuernummer": cstr(steuernummer).strip() or None}
+	columns.update(split_ust_idnr(ust_idnr, country_code))
+	return columns
+
+
+def is_ust_idnr(value):
+	"""True if value starts with a two-letter country prefix, like every EU USt-IdNr."""
+	return bool(re.match(r"^[A-Za-z]{2}", re.sub(r"\s+", "", cstr(value))))
+
+
+def split_person_name(name):
+	"""
+	(Vorname, Nachname) of an Individual's name (GitLab #114).
+
+	The first word is the Vorname, the rest the Nachname. A one-word name is
+	the Nachname: DATEV needs a Nachname for a natürliche Person.
+	"""
+	words = cstr(name).split()
+	if not words:
+		return None, None
+	if len(words) == 1:
+		return None, words[0]
+	return words[0], " ".join(words[1:])
+
+
+def split_ust_idnr(tax_id, country_code=None):
+	"""
+	EU-Land and EU-USt-IdNr. from a USt-IdNr (GitLab #114).
+
+	DATEV wants the number without its country prefix: "DE 123 456 789" ->
+	EU-Land "DE", EU-USt-IdNr. "123456789". A number without a letter prefix
+	takes the country of the address.
+	"""
+	number = re.sub(r"\s+", "", cstr(tax_id)).upper()
+	if not number:
+		return {}
+	if is_ust_idnr(number):
+		return {"EU-Land": number[:2], "EU-USt-IdNr.": number[2:]}
+	return {"EU-Land": cstr(country_code).upper() or None, "EU-USt-IdNr.": number}
+
+
+def get_account_names(filters, account_numbers=None):
+	"""
+	Sachkonten for the EXTF_Kontenbeschriftungen file.
+
+	account_numbers -- only these accounts (GitLab #76); None: every account
+	with a number.
+	"""
+	if account_numbers is not None and not account_numbers:
+		return []
+
+	number_filter = "AND account_number IN %(account_numbers)s" if account_numbers is not None else ""
+	accounts = frappe.db.sql(
+		f"""
 		SELECT
 
 			account_number as 'Konto',
@@ -2360,10 +2864,29 @@ def get_account_names(filters):
 		WHERE company = %(company)s
 		AND is_group = 0
 		AND account_number != ''
+		{number_filter}
+		ORDER BY account_number
 	""",
-		filters,
+		{
+			**filters,
+			"account_numbers": tuple(account_numbers) if account_numbers is not None else None,
+		},
 		as_dict=1,
 	)
+	return [cut_personenkonto_label(row, filters.get("account_number_length")) for row in accounts]
+
+
+def cut_personenkonto_label(row, account_number_length):
+	"""
+	Cut the label of a Personenkonto to 30 characters (GitLab #113).
+
+	A number longer than the Sachkontenlänge is a Personenkonto. DATEV writes its
+	label into the Debitor/Kreditor's "Nachname" and warns when it is longer.
+	"""
+	sachkontenlaenge = cint(account_number_length) or 4
+	if len(cstr(row.get("Konto")).strip()) > sachkontenlaenge:
+		row["Kontenbeschriftung"] = cut_text(row.get("Kontenbeschriftung"), PERSONENKONTO_LABEL_MAX_LENGTH)
+	return row
 
 
 @frappe.whitelist()
@@ -2385,6 +2908,7 @@ def download_datev_csv(filters):
 		filters = json.loads(filters)
 
 	validate(filters)
+	assert_datev_settings_complete(filters.get("company"))
 
 	filters = build_datev_export_filters(
 		company=filters.get("company"),

@@ -71,7 +71,7 @@ Journal Entries have no items. Use the same **Item Tax Template** master data on
 | Same template on multiple lines | One combined tax posting (bundled) |
 | BU-Schlüssel | Only on non-Tax accounts (business lines) |
 | Export | One DATEV row per distinct Konto + BU (+ S/H); same key lines are summed |
-| Konto / Gegenkonto | From direction-aware DATEV Mapping (same orientation as invoices): **Receivable** JE = Erlöskonto → Debitor; **Payable** JE = Aufwand → Kreditor |
+| Konto / Gegenkonto | From direction-aware DATEV Mapping (same booking as invoices; JE keeps Erlös/Aufwand on Konto, invoices put the Personenkonto there): **Receivable** JE = Erlöskonto → Debitor; **Payable** JE = Aufwand → Kreditor |
 | Amount Basis | DATEV Settings net/gross applies to JE Umsatz like invoices (GL stays net) |
 | Template requirement | Prefer exactly one tax row on the Item Tax Template; multi-rate templates **warn** on save (export may be wrong) |
 

@@ -1,0 +1,90 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-09-29 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "one_time_operations_section",
+  "si_datev_backfill_info",
+  "run_si_datev_backfill",
+  "si_datev_backfill_done",
+  "si_datev_backfill_on",
+  "si_datev_backfill_by",
+  "si_datev_backfill_result"
+ ],
+ "fields": [
+  {
+   "fieldname": "one_time_operations_section",
+   "fieldtype": "Section Break",
+   "label": "One-time Data Operations"
+  },
+  {
+   "fieldname": "si_datev_backfill_info",
+   "fieldtype": "HTML",
+   "label": "Sales Invoice DATEV Backfill Info"
+  },
+  {
+   "description": "Fills empty DATEV fields on all existing Sales Invoices. Can be run only once.",
+   "fieldname": "run_si_datev_backfill",
+   "fieldtype": "Button",
+   "label": "Run once: Fill DATEV fields on Sales Invoices"
+  },
+  {
+   "default": "0",
+   "description": "Set automatically when the Sales Invoice DATEV backfill has run. The backfill cannot run again while this is set.",
+   "fieldname": "si_datev_backfill_done",
+   "fieldtype": "Check",
+   "label": "Sales Invoice DATEV Backfill Executed",
+   "read_only": 1
+  },
+  {
+   "depends_on": "si_datev_backfill_done",
+   "description": "Date and time the backfill was run.",
+   "fieldname": "si_datev_backfill_on",
+   "fieldtype": "Datetime",
+   "label": "Executed On",
+   "read_only": 1
+  },
+  {
+   "depends_on": "si_datev_backfill_done",
+   "description": "User who ran the backfill.",
+   "fieldname": "si_datev_backfill_by",
+   "fieldtype": "Link",
+   "label": "Executed By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "depends_on": "si_datev_backfill_done",
+   "description": "Number of fields filled per DATEV field.",
+   "fieldname": "si_datev_backfill_result",
+   "fieldtype": "Small Text",
+   "label": "Result",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-11-17 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Gaertnerei Berger",
+ "name": "Gaertnerei Berger Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
