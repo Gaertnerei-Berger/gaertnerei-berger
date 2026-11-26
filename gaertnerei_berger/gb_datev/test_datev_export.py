@@ -65,7 +65,6 @@ class TestDATEVExportAPI(TestCase):
 			patch(
 				"gaertnerei_berger.gb_datev.report.datev.datev.get_datev_export_filter_values",
 				return_value={
-					"buchungsstapel_export_mode": "consultant_booking",
 					"invoice_amount_basis": "net",
 				},
 			),
