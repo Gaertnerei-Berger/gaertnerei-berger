@@ -238,9 +238,10 @@ gaertnerei_berger.DatevPage = class DatevPage {
 		return values;
 	}
 
-	create_export(force) {
+	async create_export(force) {
 		const values = this.get_values();
 		if (!values) return;
+		if (!(await check_datev_settings(values.company))) return;
 
 		frappe.call({
 			method: "gaertnerei_berger.gb_datev.report.datev.datev.create_datev_export",
@@ -344,3 +345,29 @@ gaertnerei_berger.DatevPage = class DatevPage {
 		});
 	}
 };
+
+// Before an export: the DATEV Settings must name the Steuernummer and USt-IdNr fields (GitLab #114).
+// Resolves true when they are set; otherwise shows a dialog that leads to DATEV Settings.
+function check_datev_settings(company) {
+	return frappe
+		.xcall("gaertnerei_berger.gb_datev.report.datev.datev.check_datev_settings", { company })
+		.then((result) => {
+			if (!result.missing.length) return true;
+
+			const dialog = new frappe.ui.Dialog({
+				title: __("DATEV Settings incomplete"),
+				fields: [{ fieldtype: "HTML", fieldname: "message", options: `<p>${result.message}</p>` }],
+				primary_action_label: __("Open DATEV Settings"),
+				primary_action() {
+					dialog.hide();
+					if (result.settings_exist) {
+						frappe.set_route("Form", "DATEV Settings", company);
+					} else {
+						frappe.new_doc("DATEV Settings", { client: company });
+					}
+				},
+			});
+			dialog.show();
+			return false;
+		});
+}

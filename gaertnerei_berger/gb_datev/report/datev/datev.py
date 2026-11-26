@@ -650,9 +650,55 @@ def get_recent_datev_exports(company, limit=10):
 	)
 
 
+# DATEV Settings that must be set before any export (GitLab #114)
+REQUIRED_EXPORT_SETTINGS = ("steuernummer_field", "ust_idnr_field")
+
+
+def get_missing_datev_settings(company):
+	"""Labels of the REQUIRED_EXPORT_SETTINGS that the company's DATEV Settings leave empty."""
+	values = get_required_export_setting_values(company) or {}
+	meta = frappe.get_meta("DATEV Settings")
+	return [_(meta.get_label(fieldname)) for fieldname in REQUIRED_EXPORT_SETTINGS if not values.get(fieldname)]
+
+
+def get_required_export_setting_values(company):
+	"""REQUIRED_EXPORT_SETTINGS of the company's DATEV Settings; None when there are none."""
+	if not company or not frappe.db.exists("DATEV Settings", company):
+		return None
+	return frappe.db.get_value("DATEV Settings", company, REQUIRED_EXPORT_SETTINGS, as_dict=True)
+
+
+@frappe.whitelist()
+def check_datev_settings(company):
+	"""For the DATEV page and report: what to show in the dialog before an export starts."""
+	frappe.only_for(["Accounts User", "Accounts Manager"])
+	missing = get_missing_datev_settings(company)
+	return {
+		"missing": missing,
+		"message": get_missing_settings_message(company, missing) if missing else "",
+		"settings_exist": get_required_export_setting_values(company) is not None,
+	}
+
+
+def get_missing_settings_message(company, missing):
+	items = "".join(f"<li>{frappe.utils.escape_html(label)}</li>" for label in missing)
+	return _(
+		"Before a DATEV export, set in DATEV Settings for {0} which Customer/Supplier field holds the "
+		"Steuernummer and which the USt-IdNr. Both may name the same field. Missing:"
+	).format(frappe.bold(frappe.utils.escape_html(company))) + f"<ul>{items}</ul>"
+
+
+def assert_datev_settings_complete(company):
+	"""Stop an export whose DATEV Settings miss a REQUIRED_EXPORT_SETTINGS field (GitLab #114)."""
+	missing = get_missing_datev_settings(company)
+	if missing:
+		frappe.throw(get_missing_settings_message(company, missing), title=_("DATEV Settings incomplete"))
+
+
 @frappe.whitelist()
 def create_datev_export(company, from_date, to_date, voucher_type=None, remarks=None, force=0):
 	frappe.only_for(["Accounts User", "Accounts Manager"])
+	assert_datev_settings_complete(company)
 
 	if not cint(force):
 		existing = get_existing_datev_export(company, from_date, to_date)
@@ -2891,6 +2937,7 @@ def download_datev_csv(filters):
 		filters = json.loads(filters)
 
 	validate(filters)
+	assert_datev_settings_complete(filters.get("company"))
 
 	filters = build_datev_export_filters(
 		company=filters.get("company"),

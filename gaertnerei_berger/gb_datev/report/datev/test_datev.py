@@ -281,6 +281,11 @@ class TestDatev(TestCase):
 		)
 		self.assertIn(b"100,5", comma_csv)
 
+	# DATEV Settings tax fields: tested in test_datev_settings_check (GitLab #114)
+	@patch(
+		"gaertnerei_berger.gb_datev.report.datev.datev.assert_datev_settings_complete",
+		new=lambda company: None,
+	)
 	def test_download(self):
 		"""Assert that the returned file is a ZIP file."""
 		download_datev_csv(self.filters)
@@ -514,6 +519,11 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 			journal_grouped_transactions, get_transactions_mock.call_args.args[0]
 		)
 
+	# DATEV Settings tax fields: tested in test_datev_settings_check (GitLab #114)
+	@patch(
+		"gaertnerei_berger.gb_datev.report.datev.datev.assert_datev_settings_complete",
+		new=lambda company: None,
+	)
 	def test_download_applies_journal_entry_grouping_before_csv_export(self):
 		raw_transactions = [
 			{
