@@ -17,4 +17,4 @@ gaertnerei_berger.patches.post_model_sync.set_tax_category_type
 gaertnerei_berger.patches.post_model_sync.drop_invoice_account_mappings
 execute:frappe.db.delete("Custom Role", {"report": "DATEV"})
 gaertnerei_berger.patches.post_model_sync.set_datev_tax_id_fields
-gaertnerei_berger.patches.post_model_sync.drop_buchungsstapel_export_mode
+gaertnerei_berger.patches.post_model_sync.drop_datev_settings_export_mode_column
