@@ -19,8 +19,11 @@
   "export_mode",
   "invoice_amount_basis",
   "voucher_type",
+  "include_cancelled",
+  "storno_mode",
   "section_break_details",
   "error_message",
+  "master_data_warnings",
   "remarks"
  ],
  "fields": [
@@ -126,21 +129,43 @@
    "read_only": 1
   },
   {
+   "depends_on": "master_data_warnings",
+   "description": "Used in the Buchungsstapel but left out of the Debitoren/Kreditoren files",
+   "fieldname": "master_data_warnings",
+   "fieldtype": "Small Text",
+   "label": "Master Data Warnings",
+   "read_only": 1
+  },
+  {
    "fieldname": "remarks",
    "fieldtype": "Small Text",
    "label": "Remarks"
   },
   {
+   "default": "DATEV-EXP-.YYYY.-",
    "fieldname": "naming_series",
    "fieldtype": "Select",
    "hidden": 1,
    "label": "Naming Series",
-   "options": "DATEV-EXP-.YYYY.-",
-   "default": "DATEV-EXP-.YYYY.-"
+   "options": "DATEV-EXP-.YYYY.-"
+  },
+  {
+   "default": "0",
+   "fieldname": "include_cancelled",
+   "fieldtype": "Check",
+   "label": "Include Cancelled Vouchers",
+   "read_only": 1
+  },
+  {
+   "depends_on": "include_cancelled",
+   "fieldname": "storno_mode",
+   "fieldtype": "Data",
+   "label": "Storno Rows",
+   "read_only": 1
   }
  ],
  "links": [],
- "modified": "2026-08-27 00:00:00.000000",
+ "modified": "2026-11-24 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "GB DATEV",
  "name": "DATEV Export",

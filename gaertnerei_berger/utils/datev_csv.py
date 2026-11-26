@@ -1,4 +1,6 @@
 import datetime
+import re
+import unicodedata
 import zipfile
 from csv import QUOTE_NONNUMERIC
 from decimal import ROUND_HALF_UP, Decimal
@@ -12,6 +14,24 @@ from .datev_constants import DataCategory
 
 UMSATZ_COLUMN = "Umsatz (ohne Soll/Haben-Kz)"
 
+# DATEV reads ISO-8859-1 / Windows CodePage 1252. Only cp1252 has the € sign;
+# latin_1 would turn it into "?".
+DATEV_ENCODING = "cp1252"
+
+# Digits-only Buchungsstapel fields that DATEV wants as unquoted numbers.
+# Belegdatum (#10) and Fälligkeit (#117) get the same treatment after formatting.
+UNQUOTED_ACCOUNT_COLUMNS = ("Konto", "Gegenkonto (ohne BU-Schlüssel)")
+
+# Debitoren/Kreditoren and Kontenbeschriftungen: Konto #1 is an unquoted number too.
+STAMMDATEN_CATEGORIES = (DataCategory.DEBTORS_CREDITORS, DataCategory.ACCOUNT_NAMES)
+
+# Debitoren/Kreditoren #18 and #156 allow digits only: "[\d]{0,10}".
+POSTCODE_COLUMNS = ("Postleitzahl", "Postleitzahl (Rechnungsadresse)")
+
+# Header #9 "Exportiert von" allows "\w{0,25}" (ASCII letters, digits, underscore).
+EXPORTED_BY_MAX_LENGTH = 25
+UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe", "Ü": "Ue", "ß": "ss"})
+
 
 class DatevAmount(Decimal):
 	"""Amount that renders with two decimals and a DATEV decimal separator.
@@ -23,6 +43,57 @@ class DatevAmount(Decimal):
 
 	def __str__(self):
 		return f"{self:.2f}".replace(".", self.separator)
+
+
+class DatevNumber(str):
+	"""Digits-only text (account number, TTMM date) that is written without quotes.
+
+	The csv module's QUOTE_NONNUMERIC leaves a field unquoted when it supports
+	float(). Keeping it a str keeps leading zeros, e.g. SKR04 account 0135 or the
+	Belegdatum 0108.
+	"""
+
+	def __float__(self):
+		return float(str.__str__(self) or 0)
+
+
+def as_datev_number(value):
+	"""Return value as DatevNumber; empty values become an empty, unquoted field."""
+	if value is None or (not isinstance(value, str) and pd.isna(value)):
+		return DatevNumber("")
+
+	if isinstance(value, float) and value.is_integer():
+		value = int(value)
+
+	return DatevNumber(str(value).strip())
+
+
+def clean_datev_user_name(name):
+	"""Turn a user's name into a valid header #9 "Exportiert von" ("\\w{0,25}").
+
+	"René Müller" -> "Rene_Mueller", "max.mustermann@example.com" -> "max_mustermann".
+	"""
+	name = (name or "").split("@")[0].translate(UMLAUTS)
+	name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+	name = re.sub(r"[^A-Za-z0-9_]+", "_", name).strip("_")
+	return name[:EXPORTED_BY_MAX_LENGTH].rstrip("_")
+
+
+def cut_text(value, max_length):
+	"""Cut a text to DATEV's max. field length (GitLab #113); other values stay as they are."""
+	if isinstance(value, str) and len(value) > max_length:
+		return value[:max_length].rstrip()
+	return value
+
+
+def clean_postcode(value):
+	"""Keep only the digits of a Postleitzahl: "D-64760" -> "64760" (GitLab #116).
+
+	DATEV allows digits only. Non-text values (empty cells) stay as they are.
+	"""
+	if isinstance(value, str):
+		return re.sub(r"[^0-9]", "", value)
+	return value
 
 
 def format_datev_amount(value, separator=","):
@@ -52,6 +123,14 @@ def get_datev_csv(data, filters, csv_class):
 	data_df = pd.DataFrame.from_records(data)
 	result = pd.concat([empty_df, data_df], ignore_index=True)
 
+	if csv_class.DATA_CATEGORY == DataCategory.DEBTORS_CREDITORS:
+		# Before the length cut, so "D-64760" keeps all five digits (GitLab #116)
+		for column in POSTCODE_COLUMNS:
+			result[column] = result[column].map(clean_postcode)
+
+	for column, max_length in getattr(csv_class, "MAX_LENGTHS", {}).items():
+		result[column] = result[column].map(lambda value, n=max_length: cut_text(value, n))
+
 	if csv_class.DATA_CATEGORY == DataCategory.TRANSACTIONS:
 		result["Belegdatum"] = pd.to_datetime(result["Belegdatum"])
 
@@ -59,9 +138,14 @@ def get_datev_csv(data, filters, csv_class):
 		result["Beleginfo - Inhalt 6"] = result["Beleginfo - Inhalt 6"].dt.strftime("%d%m%Y")
 
 		result["Fälligkeit"] = pd.to_datetime(result["Fälligkeit"])
-		result["Fälligkeit"] = result["Fälligkeit"].dt.strftime("%d%m%Y")
+		result["Fälligkeit"] = result["Fälligkeit"].dt.strftime("%d%m%Y").map(as_datev_number)
 
 		result = result.sort_values(by="Belegdatum", kind="stable", ignore_index=True)
+
+		# Format after sorting: TTMM as text would sort by day, not by date.
+		result["Belegdatum"] = result["Belegdatum"].dt.strftime("%d%m").map(as_datev_number)
+		for column in UNQUOTED_ACCOUNT_COLUMNS:
+			result[column] = result[column].map(as_datev_number).astype(object)
 
 		# pandas applies `decimal` to float columns only; grouped rows carry Decimal or str.
 		separator = filters.get("umsatz_decimal_separator") or ","
@@ -72,14 +156,16 @@ def get_datev_csv(data, filters, csv_class):
 	if csv_class.DATA_CATEGORY == DataCategory.ACCOUNT_NAMES:
 		result["Sprach-ID"] = "de-DE"
 
+	if csv_class.DATA_CATEGORY in STAMMDATEN_CATEGORIES:
+		# Konto #1 is digits only, written without quotes (GitLab #116)
+		result["Konto"] = result["Konto"].map(as_datev_number).astype(object)
+
 	data = result.to_csv(
 		# Reason for str(';'): https://github.com/pandas-dev/pandas/issues/6035
 		sep=";",
 		# Decimal separator for Umsatz and other numeric columns (DATEV Settings)
 		decimal=filters.get("umsatz_decimal_separator") or ",",
-		# Windows "ANSI" encoding
-		encoding="latin_1",
-		# format date as DDMM
+		# format any other date column as DDMM
 		date_format="%d%m",
 		# Windows line terminator
 		lineterminator="\r\n",
@@ -87,14 +173,14 @@ def get_datev_csv(data, filters, csv_class):
 		index=False,
 		# Use all columns defined above
 		columns=csv_class.COLUMNS,
-		# Quote most fields, even currency values with decimal separator
+		# Quote text fields. Numbers (DatevAmount, DatevNumber) stay unquoted.
 		quoting=QUOTE_NONNUMERIC,
 	)
 
-	data = data.encode("latin_1", errors="replace")
+	data = data.encode(DATEV_ENCODING, errors="replace")
 
 	header = get_header(filters, csv_class)
-	header = ";".join(header).encode("latin_1", errors="replace")
+	header = ";".join(header).encode(DATEV_ENCODING, errors="replace")
 
 	# 1st Row: Header with meta data
 	# 2nd Row: Data heading (Überschrift der Nutzdaten), included in `data` here.
@@ -130,8 +216,8 @@ def get_header(filters, csv_class):
 		"",
 		# Origin. Any two symbols, will be replaced by "SV" on import.
 		'"EN"',
-		# I = Exported by
-		f'"{frappe.session.user}"',
+		# I = Exported by: "\w{0,25}", so a cleaned name, never the e-mail address
+		f'"{clean_datev_user_name(frappe.utils.get_fullname(frappe.session.user))}"',
 		# J = Imported by -- stays empty
 		"",
 		# K = Tax consultant number (Beraternummer)

@@ -1,3 +1,4 @@
+import csv
 import zipfile
 from decimal import Decimal
 from io import BytesIO
@@ -13,7 +14,10 @@ from frappe.utils import cstr, now_datetime, today
 from gaertnerei_berger.gb_datev.report.datev.datev import (
 	apply_buchungsstapel_mapping,
 	apply_payment_entry_belegfeld_1,
+	build_datev_export_filters,
+	collect_used_master_data,
 	download_datev_csv,
+	get_datev_csv_files,
 	execute,
 	get_account_names,
 	get_customers,
@@ -160,6 +164,15 @@ def make_datev_settings(company):
 		).insert()
 
 
+
+def soll_haben_accounts(row):
+	"""(Soll account, Haben account, BU) of a DATEV row; S/H refers to Konto."""
+	konto = row["Konto"]
+	gegenkonto = row["Gegenkonto (ohne BU-Schlüssel)"]
+	if row["Soll/Haben-Kennzeichen"] == "S":
+		return konto, gegenkonto, row["BU-Schlüssel"]
+	return gegenkonto, konto, row["BU-Schlüssel"]
+
 class TestDatev(TestCase):
 	def setUp(self):
 		self.company = make_company("_Test GmbH", "_TG")
@@ -268,6 +281,11 @@ class TestDatev(TestCase):
 		)
 		self.assertIn(b"100,5", comma_csv)
 
+	# DATEV Settings tax fields: tested in test_datev_settings_check (GitLab #114)
+	@patch(
+		"gaertnerei_berger.gb_datev.report.datev.datev.assert_datev_settings_complete",
+		new=lambda company: None,
+	)
 	def test_download(self):
 		"""Assert that the returned file is a ZIP file."""
 		download_datev_csv(self.filters)
@@ -277,6 +295,110 @@ class TestDatev(TestCase):
 		zip_buffer.write(frappe.response["filecontent"])
 
 		self.assertTrue(zipfile.is_zipfile(zip_buffer))
+
+	def test_master_data_comes_from_the_buchungsstapel(self):
+		"""Master-data files hold what the Buchungsstapel uses, nothing else (GitLab #76)."""
+		set_debtor_creditor_number(self.customer.name, self.company.name, "10001")
+		unused = make_customer_without_bookings("_Test Kunde ohne Buchung", self.company.name, "10002")
+
+		filters = build_datev_export_filters(self.company.name, today(), today())
+		files = {
+			csv_file["file_name"]: read_datev_csv(csv_file["csv_data"])
+			for csv_file in get_datev_csv_files(filters)["csv_files"]
+		}
+
+		buchungsstapel = files["EXTF_Buchungsstapel.csv"]
+		used_numbers = {row["Konto"] for row in buchungsstapel} | {
+			row["Gegenkonto (ohne BU-Schlüssel)"] for row in buchungsstapel
+		}
+		kunden = {row["Konto"]: row for row in files["EXTF_Kunden.csv"]}
+		konten = {row["Konto"] for row in files["EXTF_Kontenbeschriftungen.csv"]}
+
+		# The customer has no address and is still exported
+		self.assertIn("10001", used_numbers)
+		self.assertEqual(kunden["10001"]["Name (Adressatentyp Unternehmen)"], self.customer.customer_name)
+		# A customer without bookings in the period is left out
+		self.assertNotIn("10002", kunden, unused.name)
+		# Every Sachkonto of the Buchungsstapel is labelled, and only those
+		existing = set(
+			frappe.get_all(
+				"Account", filters={"company": self.company.name, "is_group": 0}, pluck="account_number"
+			)
+		)
+		self.assertEqual(konten, (used_numbers & existing) - set(kunden))
+		self.assertNotIn("10001", konten)
+
+
+class TestCollectUsedMasterData(TestCase):
+	"""Edge cases of collect_used_master_data (GitLab #76)."""
+
+	def collect(self, transactions, personenkonten):
+		rows = [frappe._dict(party_type=t, party=p, number=n) for t, p, n in personenkonten]
+		with patch("gaertnerei_berger.gb_datev.report.datev.datev.get_personenkonten", return_value=rows):
+			return collect_used_master_data(transactions, {"company": "X", "account_number_length": 4})
+
+	def test_party_found_by_number_only(self):
+		"""A Personenkonto a DATEV Mapping put on Konto, without Beleginfo 3."""
+		used = self.collect(
+			[{"Konto": "70003", "Gegenkonto (ohne BU-Schlüssel)": "1800"}],
+			[("Supplier", "Rufus", "70003")],
+		)
+		self.assertEqual(used["parties"]["Supplier"], ["Rufus"])
+		self.assertEqual(used["account_numbers"], ["1800"])
+		self.assertEqual(used["warnings"], [])
+
+	def test_party_without_number_is_reported(self):
+		used = self.collect(
+			[
+				{
+					"Konto": "1200",
+					"Gegenkonto (ohne BU-Schlüssel)": "4400",
+					"Beleginfo - Art 3": "Customer",
+					"Beleginfo - Inhalt 3": "<b>Kunde</b>",
+				}
+			],
+			[("Customer", "<b>Kunde</b>", None)],
+		)
+		self.assertEqual(used["parties"]["Customer"], [])
+		self.assertEqual(used["account_numbers"], ["1200", "4400"])
+		self.assertEqual(len(used["warnings"]), 1)
+		# Shown as HTML on the DATEV Export form
+		self.assertIn("&lt;b&gt;Kunde&lt;/b&gt;", used["warnings"][0])
+
+	def test_orphan_personenkonto_is_reported_not_labelled(self):
+		"""A 5-digit number no party owns never goes to Kontenbeschriftungen."""
+		used = self.collect([{"Konto": "10999", "Gegenkonto (ohne BU-Schlüssel)": "4400"}], [])
+		self.assertEqual(used["account_numbers"], ["4400"])
+		self.assertEqual(len(used["warnings"]), 1)
+		self.assertIn("10999", used["warnings"][0])
+
+
+def set_debtor_creditor_number(customer, company, number):
+	party_account = frappe.db.get_value(
+		"Party Account", {"parent": customer, "parenttype": "Customer", "company": company}
+	)
+	frappe.db.set_value("Party Account", party_account, "debtor_creditor_number", number)
+
+
+def make_customer_without_bookings(customer_name, company, number):
+	if frappe.db.exists("Customer", customer_name):
+		return frappe.get_doc("Customer", customer_name)
+
+	return frappe.get_doc(
+		{
+			"doctype": "Customer",
+			"customer_name": customer_name,
+			"customer_type": "Company",
+			"customer_group": frappe.db.get_value("Customer Group", {"is_group": 0}),
+			"accounts": [{"company": company, "debtor_creditor_number": number}],
+		}
+	).insert()
+
+
+def read_datev_csv(csv_data):
+	"""Rows of an EXTF file as dicts; line 1 is the DATEV header."""
+	lines = csv_data.decode("cp1252").split("\r\n")[1:]
+	return list(csv.DictReader(lines, delimiter=";"))
 
 
 class TestDatevSalesInvoiceGrouping(TestCase):
@@ -397,6 +519,11 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 			journal_grouped_transactions, get_transactions_mock.call_args.args[0]
 		)
 
+	# DATEV Settings tax fields: tested in test_datev_settings_check (GitLab #114)
+	@patch(
+		"gaertnerei_berger.gb_datev.report.datev.datev.assert_datev_settings_complete",
+		new=lambda company: None,
+	)
 	def test_download_applies_journal_entry_grouping_before_csv_export(self):
 		raw_transactions = [
 			{
@@ -638,13 +765,14 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		sales_rows = [row for row in grouped if row["Beleginfo - Art 1"] == "Sales Invoice"]
 		self.assertEqual(len(sales_rows), 4)
 		self.assertEqual(
-			{(row["Konto"], float(row["Umsatz (ohne Soll/Haben-Kz)"])) for row in sales_rows},
+			{
+				(row["Gegenkonto (ohne BU-Schlüssel)"], float(row["Umsatz (ohne Soll/Haben-Kz)"]))
+				for row in sales_rows
+			},
 			{("8400", 25.0), ("8400", 7.0), ("8300", 9.0), ("4400", 11.0)},
 		)
-		self.assertEqual(
-			{row["Gegenkonto (ohne BU-Schlüssel)"] for row in sales_rows},
-			{"10001"},
-		)
+		self.assertEqual({row["Konto"] for row in sales_rows}, {"10001"})
+		self.assertEqual({row["Soll/Haben-Kennzeichen"] for row in sales_rows}, {"S"})
 
 		other_rows = [row for row in grouped if row["Beleginfo - Art 1"] != "Sales Invoice"]
 		self.assertEqual(len(other_rows), 1)
@@ -763,16 +891,19 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		purchase_rows = [row for row in grouped if row["Beleginfo - Art 1"] == "Purchase Invoice"]
 		self.assertEqual(len(purchase_rows), 3)
 		self.assertEqual(
-			{(row["Konto"], float(row["Umsatz (ohne Soll/Haben-Kz)"])) for row in purchase_rows},
+			{
+				(row["Gegenkonto (ohne BU-Schlüssel)"], float(row["Umsatz (ohne Soll/Haben-Kz)"]))
+				for row in purchase_rows
+			},
 			{("3400", 25.0), ("3400", 7.0), ("3300", 9.0)},
 		)
+		self.assertEqual({row["Konto"] for row in purchase_rows}, {"70001"})
 		self.assertEqual(
-			{row["Gegenkonto (ohne BU-Schlüssel)"] for row in purchase_rows},
-			{"70001"},
-		)
-		self.assertEqual(
-			{(row["Konto"], row["Soll/Haben-Kennzeichen"]) for row in purchase_rows},
-			{("3400", "S"), ("3300", "S")},
+			{
+				(row["Gegenkonto (ohne BU-Schlüssel)"], row["Soll/Haben-Kennzeichen"])
+				for row in purchase_rows
+			},
+			{("3400", "H"), ("3300", "H")},
 		)
 
 		other_rows = [row for row in grouped if row["Beleginfo - Art 1"] != "Purchase Invoice"]
@@ -883,8 +1014,8 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual(
 			self.summarize_rows(grouped),
 			[
-				("3400", "70001", 100.0, "S", "9"),
 				("70001", "1000", 119.0, "S", "90"),
+				("70001", "3400", 100.0, "H", "9"),
 			],
 		)
 		self.assertEqual({row["Belegfeld 1"] for row in grouped}, {"PINV-260020"})
@@ -909,7 +1040,7 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 			self.make_paid_purchase_invoice_transactions(),
 		)
 
-		self.assertEqual(self.summarize_rows(grouped), [("3400", "70001", 100.0, "S", "9")])
+		self.assertEqual(self.summarize_rows(grouped), [("70001", "3400", 100.0, "H", "9")])
 
 	def test_paid_purchase_return_exports_refund_as_haben(self):
 		grouped = self.group_paid_purchase_invoice(
@@ -920,8 +1051,8 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual(
 			self.summarize_rows(grouped),
 			[
-				("3400", "70001", 100.0, "H", "9"),
 				("70001", "1000", 119.0, "H", "90"),
+				("70001", "3400", 100.0, "S", "9"),
 			],
 		)
 
@@ -940,8 +1071,8 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual(
 			self.summarize_rows(grouped),
 			[
-				("3400", "70001", 100.0, "S", "9"),
 				("70001", "1000", 118.0, "S", "90"),
+				("70001", "3400", 100.0, "H", "9"),
 				("70001", "4980", 1.0, "S", ""),
 			],
 		)
@@ -955,7 +1086,8 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 
 		self.assertIn(("70001", "9999", 119.0, "S", "90"), self.summarize_rows(grouped))
 
-	def test_purchase_invoice_mapping_keeps_settlement_accounts_and_shares_kreditor(self):
+	def test_purchase_invoice_mapping_cannot_move_invoice_or_settlement_accounts(self):
+		"""A PI Mapping that puts header and item accounts elsewhere changes nothing (GitLab #97)."""
 		purchase_invoice = self.make_paid_purchase_invoice(
 			paid_amount=118,
 			base_paid_amount=118,
@@ -966,7 +1098,7 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		grouped = self.group_paid_purchase_invoice(
 			purchase_invoice, self.make_paid_purchase_invoice_transactions()
 		)
-		# PI mapping as created on customer sites: Kreditor from header, Konto/BU from items
+		# PI mapping as found on customer sites; the accounts it names are ignored
 		mapped_values = {
 			"custom_datev_account_no": "3300",
 			"items.custom_datev_account_no": "3400",
@@ -1007,9 +1139,9 @@ class TestDatevSalesInvoiceGrouping(TestCase):
 		self.assertEqual(
 			self.summarize_rows(mapped),
 			[
-				("3300", "1000", 118.0, "S", "90"),
-				("3300", "4980", 1.0, "S", ""),
-				("3400", "3300", 100.0, "S", "9"),
+				("70001", "1000", 118.0, "S", "90"),
+				("70001", "3400", 100.0, "H", "9"),
+				("70001", "4980", 1.0, "S", ""),
 			],
 		)
 		self.assertEqual({row["Beleginfo - Inhalt 5"] for row in mapped}, {"RE-1"})
@@ -2928,7 +3060,7 @@ class TestDatevExportMode(TestCase):
 				return_value=sales_invoice,
 			),
 			patch(
-				"gaertnerei_berger.gb_datev.report.datev.datev.get_invoice_gegenkonto",
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_invoice_party_konto",
 				return_value="10111",
 			),
 		):
@@ -3072,7 +3204,7 @@ class TestDatevExportMode(TestCase):
 				return_value="10111",
 			),
 			patch(
-				"gaertnerei_berger.gb_datev.report.datev.datev.get_invoice_gegenkonto",
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_invoice_party_konto",
 				return_value="10111",
 			),
 			patch(
@@ -3106,24 +3238,13 @@ class TestDatevExportMode(TestCase):
 				{"company": "_Test GmbH"},
 			)
 
-		expected = ("4300", "10111", "14", "H")
+		# Same booking in DATEV: Debitor 10111 Soll, Erlös 4300 Haben, BU 14.
+		# JE keeps Erlös on Konto, SI puts the Debitor on Konto (GitLab #97).
+		self.assertEqual(soll_haben_accounts(je_grouped[0]), ("10111", "4300", "14"))
+		self.assertEqual(soll_haben_accounts(si_grouped[0]), ("10111", "4300", "14"))
 		self.assertEqual(
-			(
-				je_grouped[0]["Konto"],
-				je_grouped[0]["Gegenkonto (ohne BU-Schlüssel)"],
-				je_grouped[0]["BU-Schlüssel"],
-				je_grouped[0]["Soll/Haben-Kennzeichen"],
-			),
-			expected,
-		)
-		self.assertEqual(
-			(
-				si_grouped[0]["Konto"],
-				si_grouped[0]["Gegenkonto (ohne BU-Schlüssel)"],
-				si_grouped[0]["BU-Schlüssel"],
-				si_grouped[0]["Soll/Haben-Kennzeichen"],
-			),
-			expected,
+			(si_grouped[0]["Konto"], si_grouped[0]["Soll/Haben-Kennzeichen"]),
+			("10111", "S"),
 		)
 
 	def test_selects_receivable_mapping_over_both_for_payment_entry(self):
@@ -3188,7 +3309,7 @@ class TestDatevFrozenExportContract(TestCase):
 		self.assertEqual(row["BU-Schlüssel"], bu)
 		self.assertEqual(row["Soll/Haben-Kennzeichen"], sh)
 
-	def test_golden_sales_invoice_erloes_to_debitor(self):
+	def test_golden_sales_invoice_debitor_to_erloes(self):
 		transactions = [
 			{
 				"Konto": "4300",
@@ -3227,7 +3348,7 @@ class TestDatevFrozenExportContract(TestCase):
 				return_value=sales_invoice,
 			),
 			patch(
-				"gaertnerei_berger.gb_datev.report.datev.datev.get_invoice_gegenkonto",
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_invoice_party_konto",
 				return_value="10111",
 			),
 		):
@@ -3237,9 +3358,9 @@ class TestDatevFrozenExportContract(TestCase):
 			)
 
 		self.assertEqual(len(grouped), 1)
-		self._assert_orientation(grouped[0], "4300", "10111", "14", "H")
+		self._assert_orientation(grouped[0], "10111", "4300", "14", "S")
 
-	def test_golden_purchase_invoice_aufwand_to_kreditor(self):
+	def test_golden_purchase_invoice_kreditor_to_aufwand(self):
 		transactions = [
 			{
 				"Konto": "5300",
@@ -3278,7 +3399,7 @@ class TestDatevFrozenExportContract(TestCase):
 				return_value=purchase_invoice,
 			),
 			patch(
-				"gaertnerei_berger.gb_datev.report.datev.datev.get_invoice_gegenkonto",
+				"gaertnerei_berger.gb_datev.report.datev.datev.get_invoice_party_konto",
 				return_value="70001",
 			),
 		):
@@ -3288,7 +3409,7 @@ class TestDatevFrozenExportContract(TestCase):
 			)
 
 		self.assertEqual(len(grouped), 1)
-		self._assert_orientation(grouped[0], "5300", "70001", "8", "S")
+		self._assert_orientation(grouped[0], "70001", "5300", "8", "H")
 
 	def test_golden_payment_entry_receive_bank_to_personenkonto(self):
 		transactions = [
